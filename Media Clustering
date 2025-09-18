@@ -1,0 +1,64 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
+
+# Percorso del file di input
+input_file_path = "Cluster Soluzione Apex risultato.csv"
+
+# Leggi i dati, prova con ',' come separatore
+df1 = pd.read_csv(input_file_path,sep=',')
+
+# Stampa i nomi delle colonne per verificare
+print(df1.columns)
+
+# Rimuovi gli spazi dai nomi delle colonne
+df1.columns = df1.columns.str.strip()
+
+# Verifica che i nomi delle colonne siano corretti
+# Dovrebbero essere qualcosa come ['Cliente', 'Apex Solution', 'Billing', 'Revenue']
+print(df1.columns)
+
+# Rimuovi i duplicati dagli indici e i valori mancanti
+df1.reset_index(drop=True, inplace=True)
+df1.dropna(inplace=True)
+
+# Rimuovi i separatori di migliaia e converti in numeri
+df1['Billing'] = df1['Billing'].str.replace('.', '').str.replace(',', '.').astype(float)
+df1['Revenue'] = df1['Revenue'].str.replace('.', '').str.replace(',', '.').astype(float)
+
+# Scala i valori per visualizzarli in migliaia
+df1['Billing'] = df1['Billing'] / 1000
+df1['Revenue'] = df1['Revenue'] / 1000
+
+# Seleziona le colonne per il clustering
+data_for_clustering = df1[['Billing', 'Revenue']]
+
+# Crea un modello di clustering con K-Means
+kmeans = KMeans(n_clusters=3, n_init=10)
+df1['Cluster'] = kmeans.fit_predict(data_for_clustering)
+
+# Visualizza un grafico scatter dei cluster
+plt.figure(figsize=(8, 6))
+scatter = plt.scatter(
+    df1['Billing'],
+    df1['Revenue'],
+    c=df1['Cluster'],
+    cmap='viridis'
+)
+plt.xlabel('Billing (in thousands)')
+plt.ylabel('Revenue (in thousands)')
+plt.title('Scatter Plot dei Cluster')
+plt.colorbar(scatter, label='Cluster')
+
+# Mostra il grafico
+plt.show()
+
+# Formatta i numeri con separatori di migliaia per l'export in CSV
+df1['Billing'] = df1['Billing'] * 1000
+df1['Revenue'] = df1['Revenue'] * 1000
+df1['Billing'] = df1['Billing'].apply(lambda x: f'{x:,.0f}'.replace(',', '.'))
+df1['Revenue'] = df1['Revenue'].apply(lambda x: f'{x:,.0f}'.replace(',', '.'))
+
+# Esporta il DataFrame con i cluster in un file CSV
+df1.to_csv("Cluster Soluzione Apex risultato finale.csv", index=False)
