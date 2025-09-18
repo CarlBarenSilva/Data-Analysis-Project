@@ -1,0 +1,123 @@
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import KFold, cross_val_score
+
+# Percorso del file di input
+input_file_path = "Cluster Conc Apex original.csv"
+
+# Leggi i dati
+data = pd.read_csv(input_file_path, sep=',')
+
+# Rimuovi gli spazi dai nomi delle colonne
+data.columns = data.columns.str.strip()
+
+# Rimuovi i duplicati e i valori mancanti
+data.reset_index(drop=True, inplace=True)
+data.dropna(inplace=True)
+
+# Assicurati che le colonne siano trattate come stringhe prima della sostituzione
+data['Billing'] = data['Billing'].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+data['Revenue'] = data['Revenue'].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+
+# Converte i valori in float
+data['Billing'] = data['Billing'].astype(float)
+data['Revenue'] = data['Revenue'].astype(float)
+
+# Scala i valori per visualizzarli in migliaia
+data['Billing'] = data['Billing'] / 1000
+data['Revenue'] = data['Revenue'] / 1000
+
+# Funzione per addestrare il modello di previsione delle revenue basato sul budget
+def train_model(data, budget_column, revenue_column):
+    X = data[[budget_column]]
+    y = data[revenue_column]
+    
+    model = LinearRegression()
+    model.fit(X, y)
+    
+    return model
+
+# Colonne del budget e revenue
+budget_column = 'Billing'
+revenue_column = 'Revenue'
+
+# Addestriamo il modello basato sul budget e revenue
+model = train_model(data, budget_column, revenue_column)
+
+# Coefficienti del modello (intercetta e coefficiente)
+intercept = model.intercept_
+coefficient = model.coef_[0]
+
+print(f'Intercetta (Beta_0): {intercept:.2f}')
+print(f'Coefficiente di regressione (Beta_1): {coefficient:.2f}')
+
+# Calcolo delle revenue previste con il modello
+data['Revenue Previste'] = model.predict(data[[budget_column]])
+
+# Calcolo dei residui
+data['Residuals'] = data['Revenue'] - data['Revenue Previste']
+
+# Esporta il DataFrame aggiornato in un file CSV
+output_file_path = r'V:\ShareToBrand\Forecasting PMX\Dati\Cluster Soluzione Apex risultato aggiornato.csv'
+data.to_csv(output_file_path, index=False)
+
+# Visualizza le prime 10 righe del dataset aggiornato
+print(data.head(10))
+
+# Metriche di valutazione del modello
+mae = mean_absolute_error(data['Revenue'], data['Revenue Previste'])
+mse = mean_squared_error(data['Revenue'], data['Revenue Previste'])
+r2 = r2_score(data['Revenue'], data['Revenue Previste'])
+
+print(f'Mean Absolute Error: {mae:.2f}')
+print(f'Mean Squared Error: {mse:.2f}')
+print(f'R² Score: {r2:.2f}')
+
+# Cross-validation
+kf = KFold(n_splits=5)
+scores = cross_val_score(model, data[[budget_column]], data[revenue_column], scoring='r2', cv=kf)
+
+print(f'R² Score medio in cross-validation: {scores.mean():.2f}')
+
+# Creazione del grafico di regressione
+plt.figure(figsize=(12, 7))
+
+# Dati originali
+plt.scatter(data[budget_column], data[revenue_column], color='blue', label='Revenue Originali', alpha=0.6)
+
+# Linea di regressione
+plt.plot(data[budget_column], model.predict(data[[budget_column]]), color='red', label='Linea di Regressione')
+
+# Predizione delle revenue
+plt.scatter(data[budget_column], data['Revenue Previste'], color='green', marker='x', label='Revenue Predette')
+
+plt.title('Regressione Lineare: Revenue vs. Billing')
+plt.xlabel('Billing (in migliaia)')
+plt.ylabel('Revenue (in migliaia)')
+plt.legend()
+plt.grid()
+plt.tight_layout()
+plt.show()
+
+# Grafico dei residui
+plt.figure(figsize=(12, 6))
+plt.scatter(data[budget_column], data['Residuals'], color='purple', alpha=0.6)
+plt.axhline(0, color='red', linestyle='--')
+plt.title('Grafico dei Residui')
+plt.xlabel('Billing (in migliaia)')
+plt.ylabel('Residuals (Revenue - Predette)')
+plt.grid()
+plt.show()
+
+# Grafico di distribuzione dei residui
+plt.figure(figsize=(12, 6))
+plt.hist(data['Residuals'], bins=20, color='skyblue', edgecolor='black')
+plt.title('Distribuzione dei Residui')
+plt.xlabel('Residuals')
+plt.ylabel('Frequenza')
+plt.axvline(0, color='red', linestyle='--')
+plt.grid()
+plt.show()
