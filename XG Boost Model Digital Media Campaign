@@ -1,0 +1,776 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.preprocessing import StandardScaler, OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.impute import SimpleImputer
+import xgboost as xgb
+from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+import warnings
+import joblib
+import difflib
+import os
+warnings.filterwarnings('ignore')
+
+# ============================================================================
+# CONFIGURAZIONE
+# ============================================================================
+
+OUTPUT_DIR = r'C:\Users\carbaren\Desktop\XG BOOST DIGITAL'
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+print("SISTEMA ANALISI MARGINI SOTTO 25% - DIGITAL ADVERTISING")
+print("ANALISI PER LOCAL ACCOUNT NAME, NOME PRODOTTO E FORMATO")
+print("="*80)
+
+def convert_to_numeric_robust(df, columns):
+    """Conversione numerica robusta per formati europei"""
+    for col in columns:
+        if col in df.columns:
+            print(f"Conversione colonna: {col}")
+            
+            # Converti a stringa e pulisci
+            df[col] = df[col].astype(str).str.strip()
+            df[col] = df[col].replace(['', 'nan', 'NaN', 'null', 'NULL', 'None'], np.nan)
+            
+            # Per valori non nulli, applica conversioni
+            mask_not_null = df[col].notna()
+            
+            if mask_not_null.any():
+                # Rimuovi caratteri non numerici (mantieni punto, virgola, segno meno)
+                df.loc[mask_not_null, col] = df.loc[mask_not_null, col].str.replace(r'[^\d\.\-,]', '', regex=True)
+                
+                # Gestione formato europeo (es: 1.234,56)
+                has_both_punct = df.loc[mask_not_null, col].str.contains(r'\d+\.\d+,\d+', na=False)
+                if has_both_punct.any():
+                    # Rimuovi punto (separatore migliaia) e sostituisci virgola con punto
+                    df.loc[mask_not_null & has_both_punct, col] = (
+                        df.loc[mask_not_null & has_both_punct, col]
+                        .str.replace('.', '', regex=False)
+                        .str.replace(',', '.', regex=False)
+                    )
+                else:
+                    # Se solo virgola, sostituisci con punto
+                    df.loc[mask_not_null, col] = df.loc[mask_not_null, col].str.replace(',', '.', regex=False)
+            
+            # Conversione finale a numerico
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+            
+            # AGGIUNTA: Forza la conversione e gestisci eventuali residui stringa
+            df[col] = df[col].apply(lambda x: pd.to_numeric(x, errors='coerce') if pd.notna(x) else np.nan)
+            
+            # Rimuovi valori negativi per costi/quantità (probabilmente errori)
+            if col in ['Client Quantity', 'Vendor Quantity', 'APEX Cost*', 'Client Billings Delivered Amt*', 'Client Cost', 'Vendor Cost']:
+                df.loc[df[col] < 0, col] = np.nan
+            
+            converted_count = df[col].notna().sum()
+            success_rate = converted_count / len(df) * 100
+            print(f"  Convertiti: {converted_count}/{len(df)} valori ({success_rate:.1f}%)")
+    
+    return df
+
+def save_results(data, filename, description):
+    """Salva risultati nella directory output"""
+    filepath = os.path.join(OUTPUT_DIR, filename)
+    if isinstance(data, pd.DataFrame):
+        data.to_csv(filepath, index=False, encoding='utf-8-sig')
+    else:
+        joblib.dump(data, filepath)
+    print(f"{description} salvato: {filepath}")
+
+# ============================================================================
+# CARICAMENTO DATI
+# ============================================================================
+
+print("\nCARICAMENTO DATASET")
+file_path = r'C:\Users\carbaren\Desktop\XG BOOST DIGITAL\DATI DIGITAL PER MODEL.csv'
+
+try:
+    df = pd.read_csv(file_path, encoding='utf-8', sep=',')
+    print("CSV caricato con separatore virgola")
+except:
+    try:
+        df = pd.read_csv(file_path, encoding='utf-8', sep=';')
+        print("CSV caricato con separatore punto e virgola")
+    except:
+        try:
+            df = pd.read_csv(file_path, encoding='latin-1', sep=';')
+            print("CSV caricato con encoding latin-1")
+        except Exception as e:
+            print(f"Errore caricamento file: {e}")
+            exit()
+
+print(f"Dataset originale: {df.shape[0]:,} righe, {df.shape[1]} colonne")
+
+# ============================================================================
+# MOSTRA VALORI DISPONIBILI E INPUT UTENTE
+# ============================================================================
+
+print("\nANALISI VALORI DISPONIBILI")
+
+# Verifica esistenza colonne richieste
+required_columns = ['Local Account Name', 'Nome prodotto', 'Format']
+missing_columns = [col for col in required_columns if col not in df.columns]
+
+if missing_columns:
+    print(f"ERRORE: Colonne mancanti: {missing_columns}")
+    print(f"Colonne disponibili: {list(df.columns)}")
+    exit()
+
+# Mostra valori unici per le variabili di selezione
+print("\nVALORI DISPONIBILI:")
+
+print("LOCAL ACCOUNT NAME:")
+account_values = df['Local Account Name'].dropna().unique()
+for i, val in enumerate(sorted(account_values), 1):
+    print(f"  {i}. {val}")
+
+print("\nNOME PRODOTTO:")
+product_values = df['Nome prodotto'].dropna().unique()
+for i, val in enumerate(sorted(product_values), 1):
+    print(f"  {i}. {val}")
+
+print("\nFORMAT:")
+format_values = df['Format'].dropna().unique()
+for i, val in enumerate(sorted(format_values), 1):
+    print(f"  {i}. {val}")
+
+# Input utente
+print("\n" + "="*50)
+print("SELEZIONE PARAMETRI")
+print("="*50)
+
+# Selezione Local Account Name
+print("\nSeleziona LOCAL ACCOUNT NAME:")
+print("Inserisci il nome completo o lascia vuoto per analizzare tutti")
+account_input = input("Local Account Name: ").strip()
+
+if account_input == "":
+    selected_accounts = list(account_values)
+    print("Analisi di tutti i Local Account Name")
+else:
+    # Cerca corrispondenza
+    matches = [a for a in account_values if account_input.lower() in a.lower()]
+    if matches:
+        selected_accounts = matches
+        print(f"Account selezionati: {matches}")
+    else:
+        print(f"Account '{account_input}' non trovato, analisi di tutti")
+        selected_accounts = list(account_values)
+
+# Selezione Nome Prodotto
+print("\nSeleziona NOME PRODOTTO:")
+print("Inserisci il nome completo o lascia vuoto per analizzare tutti")
+product_input = input("Nome Prodotto: ").strip()
+
+if product_input == "":
+    selected_products = list(product_values)
+    print("Analisi di tutti i Prodotti")
+else:
+    # Cerca corrispondenza
+    matches = [p for p in product_values if product_input.lower() in p.lower()]
+    if matches:
+        selected_products = matches
+        print(f"Prodotti selezionati: {matches}")
+    else:
+        print(f"Prodotto '{product_input}' non trovato, analisi di tutti")
+        selected_products = list(product_values)
+
+# Selezione Format
+print("\nSeleziona FORMAT:")
+print("Inserisci il nome completo o lascia vuoto per analizzare tutti")
+format_input = input("Format: ").strip()
+
+if format_input == "":
+    selected_formats = list(format_values)
+    print("Analisi di tutti i Format")
+else:
+    # Cerca corrispondenza
+    matches = [f for f in format_values if format_input.lower() in f.lower()]
+    if matches:
+        selected_formats = matches
+        print(f"Format selezionati: {matches}")
+    else:
+        print(f"Format '{format_input}' non trovato, analisi di tutti")
+        selected_formats = list(format_values)
+
+print(f"\nParametri finali:")
+print(f"Local Account Names da analizzare: {len(selected_accounts)}")
+print(f"Prodotti da analizzare: {len(selected_products)}")
+print(f"Formats da analizzare: {len(selected_formats)}")
+print(f"FILTRO: Solo combinazioni con margine SOTTO 25%")
+
+# ============================================================================
+# CONVERSIONE NUMERICA E CALCOLO MARGINE
+# ============================================================================
+
+print("\nCONVERSIONE NUMERICA")
+
+# Converti le colonne finanziarie critiche + le nuove richieste
+financial_columns = [
+    'APEX Cost*', 'Client Billings Delivered Amt*', 'Revenue', 
+    'Client Quantity', 'Vendor Quantity', 'Client Cost', 'Vendor Cost'
+]
+df = convert_to_numeric_robust(df, financial_columns)
+
+# ============================================================================
+# CALCOLO MARGINE DAI DATI DISPONIBILI
+# ============================================================================
+
+print("\nCALCOLO MARGINE DA BILLING E APEX COST")
+
+# Verifica disponibilità dati per calcolo margine
+apex_available = df['APEX Cost*'].notna().sum()
+billing_available = df['Client Billings Delivered Amt*'].notna().sum()
+
+print(f"APEX Cost* disponibili: {apex_available}")
+print(f"Client Billings disponibili: {billing_available}")
+
+# Record con entrambi i valori disponibili
+both_available = (df['APEX Cost*'].notna() & df['Client Billings Delivered Amt*'].notna()).sum()
+print(f"Record con entrambi i valori: {both_available}")
+
+if both_available < 100:
+    print("ERRORE: Dati insufficienti per calcolare margini")
+    print("Serve almeno 100 record con sia APEX Cost che Client Billings")
+    exit()
+
+# CALCOLA IL MARGINE: (Client Billing - APEX Cost) / Client Billing * 100
+print("\nCalcolo margine: (Client Billing - APEX Cost) / Client Billing * 100")
+
+mask_valid = df['APEX Cost*'].notna() & df['Client Billings Delivered Amt*'].notna()
+# Evita divisione per zero
+mask_valid = mask_valid & (df['Client Billings Delivered Amt*'] > 0)
+
+df['Calculated_Margin'] = np.nan
+df.loc[mask_valid, 'Calculated_Margin'] = (
+    (df.loc[mask_valid, 'Client Billings Delivered Amt*'] - df.loc[mask_valid, 'APEX Cost*']) / 
+    df.loc[mask_valid, 'Client Billings Delivered Amt*'] * 100
+)
+
+# Rimuovi margini irragionevoli (probabilmente errori di dati)
+reasonable_mask = (df['Calculated_Margin'] > -200) & (df['Calculated_Margin'] < 200)
+df.loc[~reasonable_mask, 'Calculated_Margin'] = np.nan
+
+calculated_margins = df['Calculated_Margin'].notna().sum()
+print(f"Margini calcolati: {calculated_margins}")
+
+if calculated_margins < 50:
+    print("ERRORE: Troppi pochi margini calcolabili")
+    exit()
+
+# Usa il margine calcolato come target
+target_col = 'Calculated_Margin'
+print(f"\nSTATISTICHE MARGINE CALCOLATO:")
+margin_data = df[target_col].dropna()
+print(f"Range: {margin_data.min():.2f}% - {margin_data.max():.2f}%")
+print(f"Media: {margin_data.mean():.2f}%")
+print(f"Mediana: {margin_data.median():.2f}%")
+print(f"Record utilizzabili: {len(margin_data)}")
+
+# ============================================================================
+# FEATURE ENGINEERING
+# ============================================================================
+
+print("\nFEATURE ENGINEERING")
+
+# Feature finanziarie aggiuntive
+epsilon = 1e-6
+df['Revenue_to_APEX_Ratio'] = df['Client Billings Delivered Amt*'] / (df['APEX Cost*'] + epsilon)
+df['Profit_Amount'] = df['Client Billings Delivered Amt*'] - df['APEX Cost*']
+
+# Feature logaritmiche per gestire scale diverse
+log_columns = ['Client Quantity', 'Vendor Quantity', 'APEX Cost*', 'Client Billings Delivered Amt*', 'Client Cost', 'Vendor Cost']
+for col in log_columns:
+    if col in df.columns:
+        df[f'{col}_log'] = np.log1p(np.maximum(df[col].fillna(0), 0))
+        print(f"Feature logaritmica creata per {col}")
+
+# Feature temporali se disponibili
+if 'Mese' in df.columns:
+    month_mapping = {
+        'Jan': 1, 'Feb': 2, 'Mar': 3, 'Apr': 4, 'May': 5, 'Jun': 6,
+        'Jul': 7, 'Aug': 8, 'Sep': 9, 'Oct': 10, 'Nov': 11, 'Dec': 12,
+        'January': 1, 'February': 2, 'March': 3, 'April': 4, 'May': 5, 'June': 6,
+        'July': 7, 'August': 8, 'September': 9, 'October': 10, 'November': 11, 'December': 12
+    }
+    df['Mese'] = df['Mese'].astype(str).str.strip()
+    df['Mese_Num'] = df['Mese'].map(month_mapping)
+    df['Mese_Num'] = df['Mese_Num'].fillna(pd.to_numeric(df['Mese'], errors='coerce'))
+    print("Feature temporali create")
+
+# ============================================================================
+# PREPARAZIONE FEATURES PER MODELLO
+# ============================================================================
+
+print("\nPREPARAZIONE FEATURES")
+
+# Features numeriche (incluse quelle richieste)
+numerical_features = [
+    'APEX Cost*', 'Client Billings Delivered Amt*', 
+    'Revenue_to_APEX_Ratio', 'Profit_Amount',
+    'Client Quantity', 'Vendor Quantity', 'Client Cost', 'Vendor Cost'
+]
+
+# Aggiungi features logaritmiche disponibili
+log_features = [
+    'APEX Cost*_log', 'Client Billings Delivered Amt*_log', 
+    'Client Quantity_log', 'Vendor Quantity_log', 
+    'Client Cost_log', 'Vendor Cost_log'
+]
+for feat in log_features:
+    if feat in df.columns:
+        numerical_features.append(feat)
+
+# Aggiungi feature temporali se disponibili
+if 'Mese_Num' in df.columns:
+    numerical_features.append('Mese_Num')
+if 'Anno' in df.columns and df['Anno'].dtype in ['int64', 'float64']:
+    numerical_features.append('Anno')
+
+# Features categoriche per ottimizzazione
+categorical_features = []
+target_categorical = [
+    'Local Account Name', 'Nome prodotto', 'Format', 'Media Format', 
+    'Network (DSP)', 'Apex Solution', 'Device', 'Channel', 'Targeting',
+    'Buying Model', 'Client Buying Model', 'Vendor'
+]
+
+for col in target_categorical:
+    if col in df.columns:
+        categorical_features.append(col)
+        df[col] = df[col].fillna('Unknown')
+        print(f"{col}: {df[col].nunique()} valori unici")
+
+# Filtra solo features che esistono
+available_numerical = [f for f in numerical_features if f in df.columns]
+available_categorical = [f for f in categorical_features if f in df.columns]
+
+print(f"\nFeatures numeriche disponibili: {len(available_numerical)}")
+print(f"Features categoriche disponibili: {len(available_categorical)}")
+
+# ============================================================================
+# PULIZIA DATASET FINALE
+# ============================================================================
+
+print("\nPULIZIA DATASET FINALE")
+
+# Seleziona features e target
+all_features = available_numerical + available_categorical
+X = df[all_features].copy()
+y = df[target_col].copy()
+
+# Rimuovi record con target mancante
+initial_size = len(X)
+mask = ~y.isnull()
+X = X[mask]
+y = y[mask]
+print(f"Rimossi {initial_size - len(X)} record con target mancante")
+
+if len(X) < 50:
+    print("ERRORE: Dataset troppo piccolo per machine learning")
+    exit()
+
+# Verifica tipi di dati delle colonne numeriche
+print("\nVERIFICA TIPI DI DATI:")
+for col in available_numerical:
+    if col in X.columns:
+        non_numeric = X[col].apply(lambda x: not isinstance(x, (int, float, np.integer, np.floating)) and pd.notna(x))
+        if non_numeric.any():
+            print(f"ATTENZIONE: {col} contiene valori non numerici:")
+            print(X.loc[non_numeric, col].unique()[:5])
+            # Forza conversione
+            X[col] = pd.to_numeric(X[col], errors='coerce')
+
+# Rimuovi outliers estremi
+q01 = y.quantile(0.01)
+q99 = y.quantile(0.99)
+mask = (y >= q01) & (y <= q99)
+X = X[mask]
+y = y[mask]
+print(f"Dataset finale dopo pulizia outliers: {len(X):,} righe")
+
+print(f"Range target: {y.min():.2f}% - {y.max():.2f}%")
+print(f"Media target: {y.mean():.2f}%")
+
+# ============================================================================
+# MODELLO MACHINE LEARNING
+# ============================================================================
+
+print("\nCREAZIONE E TRAINING MODELLO")
+
+# Pipeline di preprocessing
+numerical_transformer = Pipeline([
+    ('imputer', SimpleImputer(strategy='median')),
+    ('scaler', StandardScaler())
+])
+
+categorical_transformer = Pipeline([
+    ('imputer', SimpleImputer(strategy='constant', fill_value='Unknown')),
+    ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=False))
+])
+
+preprocessor = ColumnTransformer([
+    ('num', numerical_transformer, available_numerical),
+    ('cat', categorical_transformer, available_categorical)
+])
+
+# Modello XGBoost
+xgb_params = {
+    'objective': 'reg:squarederror',
+    'random_state': 42,
+    'n_estimators': 200,
+    'max_depth': 6,
+    'learning_rate': 0.1,
+    'subsample': 0.8,
+    'colsample_bytree': 0.8
+}
+
+model_pipeline = Pipeline([
+    ('preprocessor', preprocessor),
+    ('regressor', xgb.XGBRegressor(**xgb_params))
+])
+
+# Split dei dati
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+print(f"Training set: {len(X_train)} record")
+print(f"Test set: {len(X_test)} record")
+
+# Training
+print("Training modello...")
+model_pipeline.fit(X_train, y_train)
+
+# Valutazione
+y_pred = model_pipeline.predict(X_test)
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+r2 = r2_score(y_test, y_pred)
+
+print(f"RMSE: {rmse:.4f}")
+print(f"R²: {r2:.4f}")
+
+# ============================================================================
+# FUNZIONI OTTIMIZZAZIONE - MARGINI SOTTO 25%
+# ============================================================================
+
+def analyze_low_margin_combinations(model, df, selected_accounts, selected_products, selected_formats, max_margin=25.0, num_scenarios=10000):
+    """Analizza combinazioni con margine SOTTO la soglia specificata"""
+    print(f"\nANALISI COMBINAZIONI CON MARGINE SOTTO {max_margin}%")
+    print(f"Local Account Names: {len(selected_accounts)}")
+    print(f"Prodotti: {len(selected_products)}")
+    print(f"Formats: {len(selected_formats)}")
+    total_combinations = len(selected_accounts) * len(selected_products) * len(selected_formats)
+    print(f"Combinazioni totali: {total_combinations}")
+    
+    all_combinations = []
+    combinations_below_threshold = 0
+    
+    # Variabili aggiuntive da includere nell'output
+    additional_vars = [
+        'Client Quantity', 'Vendor Quantity', 'Buying Model', 
+        'Client Buying Model', 'Vendor', 'Client Cost', 'Vendor Cost',
+        'Media Format', 'Network (DSP)', 'Open/PMP/PG/TG/AG', 
+        'Apex Solution', 'Device', 'Channel', 'Targeting'
+    ]
+    
+    # Colonne da rimuovere dall'output (features tecniche)
+    columns_to_remove = [
+        'Revenue_to_APEX_Ratio', 'Profit_Amount', 'APEX Cost*_log', 
+        'Client Billings Delivered Amt*_log', 'Client Quantity_log', 
+        'Vendor Quantity_log', 'Mese_Num', 'Anno', 'Client Cost_log', 'Vendor Cost_log'
+    ]
+    
+    # Analizza ogni combinazione Account-Product-Format
+    for account in selected_accounts:
+        for product in selected_products:
+            for format_val in selected_formats:
+                combination_name = f"{account} | {product} | {format_val}"
+                print(f"\nAnalizzando: {combination_name}")
+                
+                # Filtra il dataset per trovare record REALI con questa combinazione
+                real_data_filter = (
+                    (df['Local Account Name'] == account) & 
+                    (df['Nome prodotto'] == product) & 
+                    (df['Format'] == format_val)
+                )
+                
+                real_records = df[real_data_filter].copy()
+                
+                if len(real_records) == 0:
+                    print(f"  ATTENZIONE: Nessun record storico trovato per questa combinazione")
+                    continue
+                
+                print(f"  Record storici trovati: {len(real_records)}")
+                
+                # Usa solo combinazioni che esistono realmente nel dataset
+                combination_scenarios = []
+                
+                # Per ogni record reale, crea variazioni sui valori numerici mantenendo le categoriche originali
+                for idx, record in real_records.iterrows():
+                    # Scenario base: usa il record originale
+                    base_scenario = record[available_numerical + available_categorical].to_dict()
+                    
+                    # Assicurati che abbia i valori target
+                    base_scenario['Local Account Name'] = account
+                    base_scenario['Nome prodotto'] = product
+                    base_scenario['Format'] = format_val
+                    
+                    try:
+                        # Predizione margine per scenario base
+                        scenario_df = pd.DataFrame([base_scenario])
+                        predicted_margin = model.predict(scenario_df)[0]
+                        
+                        # FILTRO: Solo margini SOTTO la soglia
+                        if predicted_margin < max_margin:
+                            base_scenario['Predicted_Margin'] = predicted_margin
+                            base_scenario['Scenario_Type'] = 'Real_Record'
+                            
+                            # Aggiungi le variabili aggiuntive richieste dal record originale
+                            for var in additional_vars:
+                                if var in df.columns and not pd.isna(record[var]):
+                                    base_scenario[var] = record[var]
+                                else:
+                                    base_scenario[var] = 'N/A'
+                            
+                            combination_scenarios.append(base_scenario)
+                    except Exception as e:
+                        print(f"    Errore predizione record {idx}: {e}")
+                        continue
+                    
+                    # Crea variazioni sui valori numerici mantenendo le categoriche reali
+                    num_variations = min(10, num_scenarios // len(real_records)) if len(real_records) > 0 else 10
+                    
+                    for var in range(num_variations):
+                        varied_scenario = base_scenario.copy()
+                        
+                        # Varia solo i valori numerici del ±20% mantenendo le categoriche originali
+                        for col in available_numerical:
+                            if col in varied_scenario and pd.notna(varied_scenario[col]):
+                                original_value = varied_scenario[col]
+                                
+                                # CORREZIONE: Verifica che il valore sia effettivamente numerico
+                                try:
+                                    # Converti a float se è una stringa numerica
+                                    if isinstance(original_value, str):
+                                        original_value = float(original_value)
+                                    
+                                    # Verifica che sia un numero valido e positivo
+                                    if isinstance(original_value, (int, float)) and original_value > 0:
+                                        variation_factor = np.random.uniform(0.8, 1.2)  # ±20%
+                                        varied_scenario[col] = original_value * variation_factor
+                                    
+                                except (ValueError, TypeError):
+                                    # Se non può essere convertito in numero, lascia il valore originale
+                                    continue
+                        
+                        try:
+                            # Predizione margine per scenario variato
+                            scenario_df = pd.DataFrame([varied_scenario])
+                            predicted_margin = model.predict(scenario_df)[0]
+                            
+                            # FILTRO: Solo margini SOTTO la soglia
+                            if predicted_margin < max_margin:
+                                varied_scenario['Predicted_Margin'] = predicted_margin
+                                varied_scenario['Scenario_Type'] = 'Variation'
+                                combination_scenarios.append(varied_scenario)
+                        except:
+                            continue
+                
+                if combination_scenarios:
+                    combinations_below_threshold += 1
+                    
+                    # Prendi gli scenari con margini più bassi per questa combinazione
+                    combo_df = pd.DataFrame(combination_scenarios)
+                    combo_df = combo_df.sort_values('Predicted_Margin', ascending=True)  # Dal più basso al più alto
+                    
+                    # Statistiche per questa combinazione
+                    avg_margin = combo_df['Predicted_Margin'].mean()
+                    min_margin = combo_df['Predicted_Margin'].min()
+                    median_margin = combo_df['Predicted_Margin'].median()
+                    real_scenarios = (combo_df['Scenario_Type'] == 'Real_Record').sum()
+                    
+                    print(f"  ✓ SOTTO SOGLIA! Scenari generati: {len(combo_df)}")
+                    print(f"  Scenari da record reali: {real_scenarios}")
+                    print(f"  Margine medio: {avg_margin:.2f}%")
+                    print(f"  Margine minimo: {min_margin:.2f}%")
+                    
+                    # Aggiungi statistiche alla combinazione
+                    for _, scenario in combo_df.head(10).iterrows():  # Top 10 per combinazione (margini più bassi)
+                        scenario_dict = scenario.to_dict()
+                        
+                        # Rimuovi le colonne specificate dall'output
+                        for col_to_remove in columns_to_remove:
+                            scenario_dict.pop(col_to_remove, None)
+                        
+                        scenario_dict['Combination'] = combination_name
+                        scenario_dict['Avg_Margin_Combination'] = avg_margin
+                        scenario_dict['Min_Margin_Combination'] = min_margin
+                        scenario_dict['Median_Margin_Combination'] = median_margin
+                        scenario_dict['Real_Records_Available'] = real_scenarios
+                        all_combinations.append(scenario_dict)
+                else:
+                    print(f"  ✗ Nessuno scenario sotto {max_margin}%")
+    
+    if not all_combinations:
+        print(f"Nessuna combinazione con margine inferiore a {max_margin}%")
+        return pd.DataFrame(), pd.DataFrame()
+    
+    results_df = pd.DataFrame(all_combinations)
+    results_df = results_df.sort_values('Predicted_Margin', ascending=True)  # Dal margine più basso
+    
+    # Analisi per combinazione
+    combination_summary = results_df.groupby('Combination').agg({
+        'Predicted_Margin': ['mean', 'min', 'median', 'count'],
+        'Real_Records_Available': 'first'
+    }).round(2)
+    
+    combination_summary.columns = ['Margine_Medio', 'Margine_Minimo', 'Margine_Mediano', 'Scenari_Generati', 'Record_Reali']
+    combination_summary = combination_summary.sort_values('Margine_Minimo', ascending=True)  # Dal margine più problematico
+    
+    print(f"\n" + "="*100)
+    print(f"RANKING COMBINAZIONI CON MARGINE SOTTO {max_margin}% (PROBLEMATICHE)")
+    print(f"Combinazioni trovate sotto soglia: {combinations_below_threshold}/{total_combinations}")
+    print("="*100)
+    
+    for i, (combination, stats) in enumerate(combination_summary.head(15).iterrows(), 1):
+        print(f"{i:2d}. {combination}")
+        print(f"    Margine Minimo:  {stats['Margine_Minimo']:6.2f}%")
+        print(f"    Margine Medio:   {stats['Margine_Medio']:6.2f}%")
+        print(f"    Margine Mediano: {stats['Margine_Mediano']:6.2f}%")
+        print(f"    Record reali:    {stats['Record_Reali']}")
+        print(f"    Scenari generati: {stats['Scenari_Generati']}")
+        print()
+    
+    return results_df, combination_summary
+
+# ============================================================================
+# ESECUZIONE OTTIMIZZAZIONE
+# ============================================================================
+
+print("\nESECUZIONE ANALISI MARGINI BASSI")
+
+# Prima crea il dataframe completo per le analisi
+analysis_df = df[
+    df['Local Account Name'].notna() & 
+    df['Nome prodotto'].notna() & 
+    df['Format'].notna() & 
+    df[target_col].notna()
+].copy()
+
+# FILTRO MARGINE MASSIMO: 25%
+MARGIN_THRESHOLD = 25.0
+
+low_margin_scenarios, combination_ranking = analyze_low_margin_combinations(
+    model_pipeline, analysis_df, selected_accounts, selected_products, selected_formats, 
+    max_margin=MARGIN_THRESHOLD
+)
+
+# ============================================================================
+# SALVATAGGIO RISULTATI
+# ============================================================================
+
+if len(low_margin_scenarios) > 0:
+    timestamp = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+    
+    # Excel completo con tutti i risultati
+    excel_path = os.path.join(OUTPUT_DIR, f'ANALISI_MARGINE_SOTTO_{MARGIN_THRESHOLD}_{timestamp}.xlsx')
+    
+    with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+        # Top scenari complessivi (solo quelli sotto soglia)
+        low_margin_scenarios.head(100).to_excel(writer, sheet_name='Top_100_Scenari_Sotto25', index=False)
+        
+        # Ranking combinazioni (solo quelle sotto soglia)
+        combination_ranking.to_excel(writer, sheet_name='Ranking_Combinazioni_Sotto25', index=True)
+        
+        # Analisi dettagliata per le combinazioni più problematiche
+        worst_combinations = combination_ranking.head(5).index.tolist()
+        
+        for i, combo in enumerate(worst_combinations):
+            combo_data = low_margin_scenarios[low_margin_scenarios['Combination'] == combo].head(20)
+            sheet_name = f'Problema{i+1}_{combo.replace(" | ", "_")[:25]}'
+            combo_data.to_excel(writer, sheet_name=sheet_name, index=False)
+        
+        # Summary generale
+        summary_data = [
+            ['Analisi_Timestamp', timestamp],
+            ['Soglia_Margine_Massimo', f'{MARGIN_THRESHOLD}%'],
+            ['Local_Accounts_Analizzati', len(selected_accounts)],
+            ['Prodotti_Analizzati', len(selected_products)],
+            ['Formats_Analizzati', len(selected_formats)],
+            ['Combinazioni_Totali_Possibili', len(selected_accounts) * len(selected_products) * len(selected_formats)],
+            ['Combinazioni_Sotto_Soglia', len(combination_ranking)],
+            ['Record_Dataset', len(X)],
+            ['RMSE_Modello', rmse],
+            ['R2_Modello', r2],
+            ['Margine_Minimo_Trovato', low_margin_scenarios['Predicted_Margin'].min() if len(low_margin_scenarios) > 0 else 0],
+            ['Combinazione_Piu_Problematica', combination_ranking.index[0] if len(combination_ranking) > 0 else 'Nessuna sotto soglia'],
+            ['Margine_Piu_Basso', combination_ranking.iloc[0]['Margine_Minimo'] if len(combination_ranking) > 0 else 'N/A'],
+            ['Percentuale_Problematiche', f"{len(combination_ranking)}/{len(selected_accounts) * len(selected_products) * len(selected_formats)} ({len(combination_ranking)/(len(selected_accounts) * len(selected_products) * len(selected_formats))*100:.1f}%)"]
+        ]
+        
+        summary_df = pd.DataFrame(summary_data, columns=['Metrica', 'Valore'])
+        summary_df.to_excel(writer, sheet_name='Summary', index=False)
+        
+        # Sheet dedicato alle variabili richieste
+        if len(low_margin_scenarios) > 0:
+            # Crea un DataFrame focalizzato sulle variabili richieste
+            key_vars = [
+                'Combination', 'Predicted_Margin', 'Local Account Name', 'Nome prodotto', 'Format',
+                'Client Quantity', 'Vendor Quantity', 'Buying Model', 'Client Buying Model', 
+                'Vendor', 'Client Cost', 'Vendor Cost', 'APEX Cost*', 'Client Billings Delivered Amt*',
+                'Media Format', 'Network (DSP)', 'Open/PMP/PG/TG/AG', 'Apex Solution', 
+                'Device', 'Channel', 'Targeting', 'Scenario_Type', 'Real_Records_Available'
+            ]
+            
+            # Seleziona solo le colonne che esistono
+            available_key_vars = [col for col in key_vars if col in low_margin_scenarios.columns]
+            key_analysis = low_margin_scenarios[available_key_vars].head(50)
+            key_analysis.to_excel(writer, sheet_name='Variabili_Chiave_Top50', index=False)
+    
+    print(f"\nExcel completo salvato: {excel_path}")
+    
+    # CSV semplificato con i risultati problematici
+    csv_path = os.path.join(OUTPUT_DIR, f'COMBINAZIONI_PROBLEMA_MARGINE_SOTTO_{MARGIN_THRESHOLD}_{timestamp}.csv')
+    combination_ranking.to_csv(csv_path, encoding='utf-8-sig')
+    print(f"CSV ranking problematiche salvato: {csv_path}")
+    
+    # CSV dettagliato con tutti gli scenari sotto soglia
+    csv_detailed_path = os.path.join(OUTPUT_DIR, f'SCENARI_DETTAGLIATI_MARGINE_SOTTO_{MARGIN_THRESHOLD}_{timestamp}.csv')
+    low_margin_scenarios.to_csv(csv_detailed_path, index=False, encoding='utf-8-sig')
+    print(f"CSV scenari dettagliati salvato: {csv_detailed_path}")
+
+else:
+    print(f"\nNESSUNA COMBINAZIONE TROVATA CON MARGINE INFERIORE A {MARGIN_THRESHOLD}%")
+    print("Tutte le combinazioni selezionate hanno margini superiori alla soglia.")
+
+print(f"\n" + "="*100)
+print("ANALISI COMPLETATA!")
+print(f"Local Account Names analizzati: {selected_accounts}")
+print(f"Prodotti analizzati: {selected_products}")
+print(f"Formats analizzati: {selected_formats}")
+print(f"Soglia margine massimo: {MARGIN_THRESHOLD}%")
+print(f"Combinazioni sotto soglia (PROBLEMATICHE): {len(combination_ranking) if len(combination_ranking) > 0 else 0}")
+
+if len(combination_ranking) > 0:
+    print(f"Combinazione più problematica: {combination_ranking.index[0]}")
+    print(f"Margine minimo trovato: {combination_ranking.iloc[0]['Margine_Minimo']:.2f}%")
+    
+    problem_rate = len(combination_ranking) / (len(selected_accounts) * len(selected_products) * len(selected_formats)) * 100
+    print(f"Percentuale combinazioni problematiche: {problem_rate:.1f}%")
+    
+    print(f"\nTOP 5 COMBINAZIONI PIÙ PROBLEMATICHE (MARGINE < {MARGIN_THRESHOLD}%):")
+    for i, (combo, stats) in enumerate(combination_ranking.head(5).iterrows(), 1):
+        print(f"{i}. {combo} - Margine Min: {stats['Margine_Minimo']:.2f}%")
+
+print(f"\nVariabili incluse nell'output:")
+print("• Local Account Name, Nome prodotto, Format")
+print("• Client Quantity, Vendor Quantity")  
+print("• Buying Model, Client Buying Model, Vendor")
+print("• Client Cost, Vendor Cost")
+print("• Media Format, Network (DSP)")
+print("• Open/PMP/PG/TG/AG, Apex Solution")
+print("• Device, Channel, Targeting")
+print("• APEX Cost*, Client Billings Delivered Amt*")
+print("• Predicted_Margin (calcolato dal modello)")
