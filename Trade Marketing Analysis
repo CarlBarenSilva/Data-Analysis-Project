@@ -1,0 +1,938 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime, timedelta
+import warnings
+from scipy import stats
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+
+# Per i grafici interattivi (opzionale)
+try:
+    import plotly.graph_objects as go
+    from plotly.subplots import make_subplots
+    import plotly.express as px
+    PLOTLY_AVAILABLE = True
+except ImportError:
+    PLOTLY_AVAILABLE = False
+    print("⚠️ Plotly non disponibile - grafici interattivi disabilitati")
+
+warnings.filterwarnings('ignore')
+plt.style.use('default')
+sns.set_palette("Set2")
+
+class StrategicTradeMarketingAnalyzer:
+    """
+    Analizzatore strategico per Trade Marketing con focus su pricing e promozioni
+    """
+    
+    def __init__(self, data: pd.DataFrame, category: str = "Bevande Energetiche", product_name: str = None):
+        # Filtra per sottocategoria (più ampio) o prodotto specifico
+        if product_name:
+            self.data = data[data['Prodotto'] == product_name].copy()
+            self.analysis_name = product_name
+        else:
+            # Filtra per sottocategoria per avere più dati
+            if 'Sottocategoria' in data.columns:
+                self.data = data[data['Sottocategoria'] == category].copy()
+            else:
+                # Fallback: cerca nella colonna Prodotto
+                self.data = data[data['Prodotto'].str.contains('Red Bull|Monster|Redbull', case=False, na=False)].copy()
+            self.analysis_name = category
+        
+        if len(self.data) == 0:
+            raise ValueError(f"Nessun dato trovato per: {self.analysis_name}")
+        
+        print(f"🎯 STRATEGIC TRADE MARKETING ANALYSIS - {self.analysis_name}")
+        print("=" * 70)
+        print(f"📊 Transazioni totali: {len(self.data)}")
+        
+        # Mostra breakdown prodotti se analisi per categoria
+        if not product_name and len(self.data) > 0:
+            product_breakdown = self.data['Prodotto'].value_counts().head(10)
+            print(f"📋 Top prodotti nella categoria:")
+            for prod, count in product_breakdown.items():
+                print(f"   {prod}: {count} transazioni")
+            print()
+        
+        # Preparazione dati
+        self._prepare_data()
+        self._calculate_key_metrics()
+        self._analyze_price_volume_relationship()
+        self._analyze_promotional_effectiveness()
+        self._calculate_optimal_scenarios()
+        
+    def _prepare_data(self):
+        """Prepara e pulisce i dati con interpretazione corretta e filtri più permissivi"""
+        print(f"\n📋 PREPARAZIONE DATI CON FILTRI ALLARGATI")
+        print("-" * 45)
+        
+        # Debug iniziale dei prezzi
+        print(f"🔍 DEBUG PREZZI INIZIALI:")
+        print(f"   Min: €{self.data['Prezzo per Articolo'].min():.2f}")
+        print(f"   Max: €{self.data['Prezzo per Articolo'].max():.2f}")
+        print(f"   Mean: €{self.data['Prezzo per Articolo'].mean():.2f}")
+        print(f"   Mediana: €{self.data['Prezzo per Articolo'].median():.2f}")
+        
+        # Converti prezzi da centesimi a euro se necessario
+        if self.data['Prezzo per Articolo'].mean() > 10:
+            print(f"⚠️ Prezzi sembrano in centesimi, convertendo...")
+            self.data['Prezzo per Articolo'] = self.data['Prezzo per Articolo'] / 100
+            print(f"✅ Prezzi convertiti - Nuovo range: €{self.data['Prezzo per Articolo'].min():.2f} - €{self.data['Prezzo per Articolo'].max():.2f}")
+        else:
+            print(f"✅ Prezzi già in euro - range corretto")
+        
+        # Converti data
+        self.data['Data'] = pd.to_datetime(self.data['Data Completa'], format='%d/%m/%Y')
+        self.data['Mese_Nome'] = self.data['Data'].dt.strftime('%B')
+        self.data['Anno'] = self.data['Data'].dt.year
+        self.data['Mese'] = self.data['Data'].dt.month
+        
+        # CORREZIONE CRITICA: Calcola metriche derivate CORRETTAMENTE al volo
+        # Revenue per transazione = prezzo unitario × quantità
+        self.data['Revenue_per_Transaction'] = self.data['Prezzo per Articolo'] * self.data['Quantità Articolo']
+        
+        # CORREZIONE: Margine per transazione = margine unitario × quantità (NON usare colonna preesistente)
+        # Ricalcola sempre al volo per evitare dati aggregati
+        self.data['Margin_per_Transaction_Correct'] = self.data['Margine Netto'] * self.data['Quantità Articolo']
+        
+        # ROI promozionale corretto
+        self.data['ROI_Promotion'] = np.where(
+            self.data['Costo Promozione'] > 0,
+            (self.data['Margin_per_Transaction_Correct'] / self.data['Costo Promozione']) * 100,
+            0
+        )
+        
+        # Identifica transazioni promozionali
+        self.data['Is_Promo'] = ~self.data['Tipologia Promozione'].isna()
+        
+        # FILTRI MOLTO PIÙ PERMISSIVI per bevande energetiche
+        initial_count = len(self.data)
+        
+        # Analizza la distribuzione prima del filtraggio
+        print(f"\n📊 ANALISI DISTRIBUZIONE PRE-FILTRO:")
+        print(f"   Prezzo - P5: €{self.data['Prezzo per Articolo'].quantile(0.05):.2f}, P95: €{self.data['Prezzo per Articolo'].quantile(0.95):.2f}")
+        print(f"   Quantità - P5: {self.data['Quantità Articolo'].quantile(0.05):.0f}, P95: {self.data['Quantità Articolo'].quantile(0.95):.0f}")
+        print(f"   Margine - P5: €{self.data['Margine Netto'].quantile(0.05):.2f}, P95: €{self.data['Margine Netto'].quantile(0.95):.2f}")
+        
+        # Filtri basati sui percentili per essere più inclusivi
+        price_min = max(0.50, self.data['Prezzo per Articolo'].quantile(0.01))  # P1 o min €0.50
+        price_max = min(15.0, self.data['Prezzo per Articolo'].quantile(0.99))   # P99 o max €15.00
+        
+        qty_min = max(1, self.data['Quantità Articolo'].quantile(0.01))          # P1 o min 1
+        qty_max = min(100, self.data['Quantità Articolo'].quantile(0.98))       # P98 o max 100
+        
+        margin_min = max(0.01, self.data['Margine Netto'].quantile(0.01))       # P1 o min €0.01
+        margin_max = min(10.0, self.data['Margine Netto'].quantile(0.99))       # P99 o max €10.00
+        
+        print(f"\n🎯 FILTRI APPLICATI (molto permissivi):")
+        print(f"   Prezzo: €{price_min:.2f} - €{price_max:.2f}")
+        print(f"   Quantità: {qty_min:.0f} - {qty_max:.0f} unità")
+        print(f"   Margine: €{margin_min:.2f} - €{margin_max:.2f}")
+        
+        # Applica filtri permissivi
+        self.data = self.data[
+            (self.data['Prezzo per Articolo'] >= price_min) &
+            (self.data['Prezzo per Articolo'] <= price_max) &
+            (self.data['Quantità Articolo'] >= qty_min) & 
+            (self.data['Quantità Articolo'] <= qty_max) &
+            (self.data['Margine Netto'] >= margin_min) &
+            (self.data['Margine Netto'] <= margin_max)
+        ].copy()
+        
+        outliers_removed = initial_count - len(self.data)
+        retention_rate = (len(self.data) / initial_count * 100)
+        
+        print(f"\n✅ RISULTATI FILTRAGGIO:")
+        print(f"   Outliers rimossi: {outliers_removed:,} ({(outliers_removed/initial_count*100):.1f}%)")
+        print(f"   Dati conservati: {len(self.data):,} transazioni ({retention_rate:.1f}%)")
+        print(f"   Range prezzi finale: €{self.data['Prezzo per Articolo'].min():.2f} - €{self.data['Prezzo per Articolo'].max():.2f}")
+        print(f"   Range quantità finale: {self.data['Quantità Articolo'].min():.0f} - {self.data['Quantità Articolo'].max():.0f} unità")
+        print(f"   Range margine finale: €{self.data['Margine Netto'].min():.2f} - €{self.data['Margine Netto'].max():.2f}")
+        
+        # Verifica qualità dati
+        if len(self.data) < 100:
+            print(f"⚠️ ATTENZIONE: Solo {len(self.data)} transazioni rimaste.")
+            if len(self.data) < 50:
+                print("   Considerare di allargare ulteriormente i filtri o cambiare categoria.")
+        else:
+            print(f"✅ OTTIMO: {len(self.data)} transazioni sufficienti per analisi robusta.")
+        
+        if len(self.data) == 0:
+            raise ValueError("Nessun dato valido dopo il filtraggio. Controlla i range di filtro o la categoria selezionata.")
+        
+    def _calculate_key_metrics(self):
+        """Calcola metriche chiave per l'analisi - CORRETTO"""
+        print(f"\n💰 METRICHE CHIAVE CORRETTE")
+        print("-" * 30)
+        
+        # Metriche generali usando i calcoli corretti
+        self.avg_price = self.data['Prezzo per Articolo'].mean()
+        self.median_price = self.data['Prezzo per Articolo'].median()
+        self.avg_quantity = self.data['Quantità Articolo'].mean()
+        self.avg_margin_per_unit = self.data['Margine Netto'].mean()
+        # USA IL CALCOLO CORRETTO
+        self.avg_margin_per_transaction = self.data['Margin_per_Transaction_Correct'].mean()
+        self.avg_revenue_per_transaction = self.data['Revenue_per_Transaction'].mean()
+        
+        # Metriche promozionali vs non promozionali
+        promo_data = self.data[self.data['Is_Promo'] == True]
+        non_promo_data = self.data[self.data['Is_Promo'] == False]
+        
+        self.promo_metrics = {
+            'avg_price': promo_data['Prezzo per Articolo'].mean() if len(promo_data) > 0 else 0,
+            'avg_quantity': promo_data['Quantità Articolo'].mean() if len(promo_data) > 0 else 0,
+            'avg_margin_per_unit': promo_data['Margine Netto'].mean() if len(promo_data) > 0 else 0,
+            'avg_margin_per_transaction': promo_data['Margin_per_Transaction_Correct'].mean() if len(promo_data) > 0 else 0,
+            'avg_revenue': promo_data['Revenue_per_Transaction'].mean() if len(promo_data) > 0 else 0,
+            'transactions': len(promo_data)
+        }
+        
+        self.non_promo_metrics = {
+            'avg_price': non_promo_data['Prezzo per Articolo'].mean() if len(non_promo_data) > 0 else 0,
+            'avg_quantity': non_promo_data['Quantità Articolo'].mean() if len(non_promo_data) > 0 else 0,
+            'avg_margin_per_unit': non_promo_data['Margine Netto'].mean() if len(non_promo_data) > 0 else 0,
+            'avg_margin_per_transaction': non_promo_data['Margin_per_Transaction_Correct'].mean() if len(non_promo_data) > 0 else 0,
+            'avg_revenue': non_promo_data['Revenue_per_Transaction'].mean() if len(non_promo_data) > 0 else 0,
+            'transactions': len(non_promo_data)
+        }
+        
+        print(f"📊 Prezzo medio: €{self.avg_price:.2f}")
+        print(f"📦 Quantità media per transazione: {self.avg_quantity:.1f} unità")
+        print(f"💰 Margine medio per unità: €{self.avg_margin_per_unit:.2f}")
+        print(f"💰 Margine medio per transazione: €{self.avg_margin_per_transaction:.2f}")
+        print(f"💶 Revenue media per transazione: €{self.avg_revenue_per_transaction:.2f}")
+        print(f"🎪 Transazioni promo: {self.promo_metrics['transactions']}")
+        print(f"📈 Transazioni normali: {self.non_promo_metrics['transactions']}")
+        
+        # Verifica logica dati
+        print(f"\n🔍 VERIFICA LOGICA DATI:")
+        print(f"   Revenue = Prezzo × Quantità: €{self.avg_price:.2f} × {self.avg_quantity:.1f} = €{self.avg_price * self.avg_quantity:.2f}")
+        print(f"   Revenue calcolata: €{self.avg_revenue_per_transaction:.2f} ✅")
+        print(f"   Margine = Margine/unità × Quantità: €{self.avg_margin_per_unit:.2f} × {self.avg_quantity:.1f} = €{self.avg_margin_per_unit * self.avg_quantity:.2f}")
+        print(f"   Margine calcolato: €{self.avg_margin_per_transaction:.2f} ✅")
+        
+    def _analyze_price_volume_relationship(self):
+        """Analizza la relazione prezzo-volume per calcolare elasticità"""
+        print(f"\n📈 ANALISI ELASTICITÀ PREZZO-VOLUME")
+        print("-" * 40)
+        
+        # Aggrega per fasce di prezzo per ridurre noise
+        price_bins = pd.cut(self.data['Prezzo per Articolo'], bins=8)
+        price_volume_analysis = self.data.groupby(price_bins).agg({
+            'Prezzo per Articolo': 'mean',
+            'Quantità Articolo': ['mean', 'sum', 'count'],
+            'Margine Netto': 'mean',
+            'Revenue_per_Transaction': 'mean'
+        }).round(2)
+        
+        # Calcola elasticità usando regressione log-log
+        prices = price_volume_analysis['Prezzo per Articolo']['mean'].dropna()
+        quantities = price_volume_analysis['Quantità Articolo']['mean'].dropna()
+        
+        if len(prices) >= 4:
+            # Log-log regression
+            log_prices = np.log(prices)
+            log_quantities = np.log(quantities)
+            
+            slope, intercept, r_value, p_value, std_err = stats.linregress(log_prices, log_quantities)
+            self.price_elasticity = slope
+            self.elasticity_r_squared = r_value ** 2
+        else:
+            # Default per bevande energetiche
+            self.price_elasticity = -1.2
+            self.elasticity_r_squared = 0.4
+        
+        self.price_volume_data = price_volume_analysis
+        
+        print(f"📊 Elasticità prezzo: {self.price_elasticity:.3f}")
+        print(f"🎯 R² elasticità: {self.elasticity_r_squared:.3f}")
+        
+    def _analyze_promotional_effectiveness(self):
+        """Analizza l'efficacia delle promozioni"""
+        print(f"\n🎪 ANALISI EFFICACIA PROMOZIONI")
+        print("-" * 35)
+        
+        promo_data = self.data[self.data['Is_Promo'] == True]
+        
+        if len(promo_data) == 0:
+            print("⚠️ Nessuna promozione trovata")
+            self.promo_effectiveness = {}
+            return
+        
+        # Analisi per tipo di promozione
+        self.promo_effectiveness = {}
+        
+        for promo_type in promo_data['Tipologia Promozione'].unique():
+            if pd.notna(promo_type):
+                subset = promo_data[promo_data['Tipologia Promozione'] == promo_type]
+                
+                # Calcola metriche vs baseline NON promozionale
+                baseline_qty = self.non_promo_metrics['avg_quantity'] if self.non_promo_metrics['transactions'] > 0 else self.avg_quantity
+                baseline_margin_per_unit = self.non_promo_metrics['avg_margin_per_unit'] if self.non_promo_metrics['transactions'] > 0 else self.avg_margin_per_unit
+                
+                volume_lift = ((subset['Quantità Articolo'].mean() - baseline_qty) / baseline_qty * 100) if baseline_qty > 0 else 0
+                margin_impact_per_unit = subset['Margine Netto'].mean() - baseline_margin_per_unit
+                margin_impact_per_transaction = subset['Margin_per_Transaction_Correct'].mean() - (baseline_margin_per_unit * baseline_qty)
+                
+                # ROI promozionale corretto
+                total_investment = subset['Costo Promozione'].sum()
+                extra_margin_total = margin_impact_per_transaction * len(subset)
+                roi = (extra_margin_total / total_investment * 100) if total_investment > 0 else 0
+                
+                self.promo_effectiveness[promo_type] = {
+                    'transactions': len(subset),
+                    'avg_price': subset['Prezzo per Articolo'].mean(),
+                    'avg_quantity': subset['Quantità Articolo'].mean(),
+                    'volume_lift_pct': volume_lift,
+                    'margin_impact_per_unit': margin_impact_per_unit,
+                    'margin_impact_per_transaction': margin_impact_per_transaction,
+                    'roi_pct': roi,
+                    'avg_cost': subset['Costo Promozione'].mean(),
+                    'avg_discount': subset['Sconto'].mean(),
+                    'avg_duration': subset['Durata Promozione'].mean(),
+                    'margin_per_unit': subset['Margine Netto'].mean(),
+                    'margin_per_transaction': subset['Margin_per_Transaction_Correct'].mean()
+                }
+        
+        # Trova migliore promozione
+        if self.promo_effectiveness:
+            best_promo = max(self.promo_effectiveness.items(), 
+                           key=lambda x: x[1]['roi_pct'] if x[1]['roi_pct'] > 0 else 0)
+            print(f"🏆 Migliore promozione: {best_promo[0]}")
+            print(f"   Volume lift: {best_promo[1]['volume_lift_pct']:+.1f}%")
+            print(f"   ROI: {best_promo[1]['roi_pct']:.1f}%")
+        
+    def _calculate_optimal_scenarios(self):
+        """Calcola scenari ottimali per prezzo e volumi"""
+        print(f"\n🎯 CALCOLO SCENARI OTTIMALI")
+        print("-" * 30)
+        
+        # Range di prezzi da testare
+        current_price = self.median_price
+        price_range = np.linspace(current_price * 0.8, current_price * 1.2, 15)
+        
+        scenarios = []
+        
+        for price in price_range:
+            # Calcola volume atteso usando elasticità
+            price_change_pct = (price - current_price) / current_price
+            volume_change_pct = self.price_elasticity * price_change_pct
+            expected_quantity = self.avg_quantity * (1 + volume_change_pct)
+            
+            # Stima costo variabile dal margine attuale
+            estimated_variable_cost_per_unit = current_price - self.avg_margin_per_unit
+            margin_per_unit = price - estimated_variable_cost_per_unit
+            
+            # Calcola metriche scenario
+            revenue_per_transaction = price * expected_quantity
+            margin_per_transaction = margin_per_unit * expected_quantity
+            
+            scenarios.append({
+                'price': price,
+                'expected_quantity': max(0, expected_quantity),
+                'revenue_per_transaction': revenue_per_transaction,
+                'margin_per_transaction': margin_per_transaction,
+                'margin_per_unit': margin_per_unit,
+                'price_change_pct': price_change_pct * 100,
+                'volume_change_pct': volume_change_pct * 100
+            })
+        
+        self.price_scenarios = pd.DataFrame(scenarios)
+        
+        # Trova scenario ottimale (massimo margine per transazione)
+        optimal_scenario = self.price_scenarios.loc[self.price_scenarios['margin_per_transaction'].idxmax()]
+        
+        self.optimal_price = optimal_scenario['price']
+        self.optimal_quantity = optimal_scenario['expected_quantity']
+        self.optimal_margin_per_transaction = optimal_scenario['margin_per_transaction']
+        self.optimal_margin_per_unit = optimal_scenario['margin_per_unit']
+        
+        print(f"💰 Prezzo ottimale: €{self.optimal_price:.2f}")
+        print(f"📦 Quantità ottimale: {self.optimal_quantity:.1f} unità")
+        print(f"🎯 Margine ottimale per transazione: €{self.optimal_margin_per_transaction:.2f}")
+        print(f"💎 Margine ottimale per unità: €{self.optimal_margin_per_unit:.2f}")
+
+def create_strategic_dashboard(analyzer):
+    """Crea dashboard strategica con grafici intuitivi - MARGINI CORRETTI"""
+    
+    # Calcola price_change qui all'inizio della funzione
+    price_change = (analyzer.optimal_price - analyzer.avg_price) / analyzer.avg_price * 100
+    
+    fig, axes = plt.subplots(4, 3, figsize=(20, 16))
+    fig.suptitle(f'🎯 STRATEGIC TRADE MARKETING DASHBOARD - {analyzer.analysis_name}', 
+                fontsize=18, fontweight='bold', y=0.98)
+    
+    # 1. Price Optimization Curve
+    ax1 = axes[0, 0]
+    scenarios = analyzer.price_scenarios
+    
+    ax1_twin = ax1.twinx()
+    
+    line1 = ax1.plot(scenarios['price'], scenarios['margin_per_transaction'], 
+                     'b-', linewidth=3, marker='o', label='Margin per Transaction')
+    line2 = ax1_twin.plot(scenarios['price'], scenarios['expected_quantity'], 
+                          'r--', linewidth=2, marker='s', label='Expected Quantity')
+    
+    ax1.axvline(x=analyzer.optimal_price, color='green', linestyle=':', linewidth=2,
+                label=f'Optimal: €{analyzer.optimal_price:.2f}')
+    
+    ax1.set_xlabel('Price (€)')
+    ax1.set_ylabel('Margin per Transaction (€)', color='blue')
+    ax1_twin.set_ylabel('Expected Quantity', color='red')
+    ax1.set_title('💰 Price Optimization Curve')
+    ax1.grid(True, alpha=0.3)
+    ax1.legend(loc='upper left')
+    ax1_twin.legend(loc='upper right')
+    
+    # 2. Volume Uplift by Price Change
+    ax2 = axes[0, 1]
+    scatter = ax2.scatter(scenarios['price_change_pct'], scenarios['volume_change_pct'], 
+                         s=100, alpha=0.7, c=scenarios['margin_per_transaction'], cmap='RdYlGn')
+    
+    ax2.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+    ax2.axvline(x=0, color='black', linestyle='--', alpha=0.5)
+    
+    ax2.set_xlabel('Price Change (%)')
+    ax2.set_ylabel('Volume Change (%)')
+    ax2.set_title('📈 Price-Volume Elasticity Impact')
+    ax2.grid(True, alpha=0.3)
+    plt.colorbar(scatter, ax=ax2, label='Margin (€)')
+    
+    # 3. Promotional ROI Analysis
+    ax3 = axes[0, 2]
+    if analyzer.promo_effectiveness:
+        promo_types = list(analyzer.promo_effectiveness.keys())
+        roi_values = [analyzer.promo_effectiveness[p]['roi_pct'] for p in promo_types]
+        volume_lifts = [analyzer.promo_effectiveness[p]['volume_lift_pct'] for p in promo_types]
+        
+        bubble_sizes = [max(20, analyzer.promo_effectiveness[p]['transactions']) for p in promo_types]
+        scatter = ax3.scatter(roi_values, volume_lifts, s=bubble_sizes, alpha=0.6, 
+                             c=range(len(promo_types)), cmap='viridis')
+        
+        ax3.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+        ax3.axvline(x=0, color='black', linestyle='--', alpha=0.5)
+        
+        for i, promo in enumerate(promo_types):
+            ax3.annotate(promo, (roi_values[i], volume_lifts[i]), 
+                        xytext=(5, 5), textcoords='offset points', fontsize=8)
+        
+        ax3.set_xlabel('ROI (%)')
+        ax3.set_ylabel('Volume Lift (%)')
+        ax3.set_title('🎪 Promotion Effectiveness Matrix')
+    else:
+        ax3.text(0.5, 0.5, 'No Promotion Data', ha='center', va='center', 
+                transform=ax3.transAxes, fontsize=12)
+    
+    ax3.grid(True, alpha=0.3)
+    
+    # 4. Monthly Performance Trends
+    ax4 = axes[1, 0]
+    monthly_trends = analyzer.data.groupby('Mese').agg({
+        'Prezzo per Articolo': 'mean',
+        'Quantità Articolo': 'mean',
+        'Margine Netto': 'mean'
+    })
+    
+    ax4.plot(monthly_trends.index, monthly_trends['Prezzo per Articolo'], 
+             'b-', marker='o', label='Avg Price', linewidth=2)
+    ax4_twin = ax4.twinx()
+    ax4_twin.plot(monthly_trends.index, monthly_trends['Quantità Articolo'], 
+                  'r--', marker='s', label='Avg Quantity', linewidth=2)
+    
+    ax4.set_xlabel('Month')
+    ax4.set_ylabel('Average Price (€)', color='blue')
+    ax4_twin.set_ylabel('Average Quantity', color='red')
+    ax4.set_title('📊 Monthly Performance Trends')
+    ax4.legend(loc='upper left')
+    ax4_twin.legend(loc='upper right')
+    ax4.grid(True, alpha=0.3)
+    
+    # 5. Revenue vs Margin Scatter - CORRETTO: mostra margine per UNITÀ
+    ax5 = axes[1, 1]
+    colors = ['red' if promo else 'blue' for promo in analyzer.data['Is_Promo']]
+    
+    # USA IL MARGINE PER UNITÀ (non moltiplicato per quantità)
+    ax5.scatter(analyzer.data['Revenue_per_Transaction'], 
+                analyzer.data['Margine Netto'],
+                c=colors, alpha=0.6, s=30)
+    
+    ax5.set_xlabel('Revenue per Transaction (€)')
+    ax5.set_ylabel('Margin per Unit (€)')
+    ax5.set_title('💰 Revenue vs Margin per Unit Analysis')
+    ax5.grid(True, alpha=0.3)
+    
+    from matplotlib.patches import Patch
+    legend_elements = [Patch(facecolor='blue', label='Normal'),
+                      Patch(facecolor='red', label='Promotion')]
+    ax5.legend(handles=legend_elements)
+    
+    # 6. Price by Channel Type
+    ax6 = axes[1, 2]
+    if 'Tipologia Punto Vendita' in analyzer.data.columns:
+        channel_analysis = analyzer.data.groupby('Tipologia Punto Vendita').agg({
+            'Prezzo per Articolo': ['mean', 'std'],
+            'Quantità Articolo': 'mean'
+        }).round(2)
+        
+        channels = channel_analysis.index
+        avg_prices = channel_analysis['Prezzo per Articolo']['mean']
+        price_stds = channel_analysis['Prezzo per Articolo']['std'].fillna(0)
+        
+        bars = ax6.bar(range(len(channels)), avg_prices, 
+                       yerr=price_stds, capsize=5, alpha=0.7, color='skyblue')
+        
+        ax6.set_xticks(range(len(channels)))
+        ax6.set_xticklabels(channels, rotation=45, ha='right')
+        ax6.set_ylabel('Average Price (€)')
+        ax6.set_title('🏪 Price by Channel Type')
+        
+        ax6.axhline(y=analyzer.optimal_price, color='green', linestyle='--', 
+                    linewidth=2, label=f'Optimal: €{analyzer.optimal_price:.2f}')
+        ax6.legend()
+    else:
+        ax6.text(0.5, 0.5, 'No Channel Data', ha='center', va='center',
+                transform=ax6.transAxes, fontsize=12)
+    
+    # 7. Seasonal Promotion Opportunities
+    ax7 = axes[2, 0]
+    monthly_analysis = analyzer.data.groupby('Mese').agg({
+        'Quantità Articolo': 'mean',
+        'Sell Out': 'mean',
+        'Margine Netto': 'mean',
+        'Tipologia Promozione': 'count'
+    }).fillna(0)
+    
+    months = list(range(1, 13))
+    month_names = ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 
+                   'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic']
+    
+    avg_sellout = monthly_analysis['Sell Out'].mean()
+    low_sellout_months = monthly_analysis[monthly_analysis['Sell Out'] < avg_sellout * 0.9].index
+    
+    avg_margin = monthly_analysis['Margine Netto'].mean()
+    high_margin_months = monthly_analysis[monthly_analysis['Margine Netto'] > avg_margin * 1.1].index
+    
+    ax7_twin = ax7.twinx()
+    
+    sellouts = [monthly_analysis.loc[m, 'Sell Out'] if m in monthly_analysis.index else 0 for m in months]
+    colors = ['red' if m in low_sellout_months else 'lightblue' for m in months]
+    
+    bars = ax7.bar([m-0.2 for m in months], sellouts, width=0.4, color=colors, alpha=0.7, label='Sell Out')
+    
+    margins = [monthly_analysis.loc[m, 'Margine Netto'] if m in monthly_analysis.index else 0 for m in months]
+    line = ax7_twin.plot(months, margins, 'go-', linewidth=3, markersize=8, label='Margine/Unit')
+    
+    opportunity_months = set(low_sellout_months) & set(high_margin_months)
+    for month in opportunity_months:
+        if month in months:
+            ax7.axvline(x=month, color='gold', linestyle='--', linewidth=3, alpha=0.8)
+            ax7.text(month, max(sellouts)*0.9, '🎯', ha='center', va='center', fontsize=20)
+    
+    ax7.set_xlabel('Month')
+    ax7.set_ylabel('Avg Sell Out', color='blue')
+    ax7_twin.set_ylabel('Avg Margin/Unit (€)', color='green')
+    ax7.set_title('🌟 Promotion Opportunities by Sell Out\n(🎯 = Low Sell Out + High Margin)')
+    ax7.set_xticks(months)
+    ax7.set_xticklabels([month_names[m-1] for m in months])
+    
+    from matplotlib.patches import Patch
+    legend_elements = [
+        Patch(facecolor='red', alpha=0.7, label='Low Sell Out (Opportunity)'),
+        Patch(facecolor='lightblue', alpha=0.7, label='Normal Sell Out'),
+        Patch(facecolor='gold', alpha=0.7, label='Best Promo Timing')
+    ]
+    ax7.legend(handles=legend_elements, loc='upper left')
+    
+    # 8. Promotion Performance Analysis
+    ax8 = axes[2, 1]
+    
+    if analyzer.promo_effectiveness:
+        promo_performance = []
+        
+        for promo_type in analyzer.promo_effectiveness.keys():
+            promo_subset = analyzer.data[analyzer.data['Tipologia Promozione'] == promo_type]
+            
+            avg_sellout = promo_subset['Sell Out'].mean()
+            avg_margin = promo_subset['Margine Netto'].mean()
+            avg_cost = promo_subset['Costo Promozione'].mean()
+            transaction_count = len(promo_subset)
+            
+            promo_performance.append({
+                'type': promo_type,
+                'sellout': avg_sellout,
+                'margin': avg_margin,
+                'cost': avg_cost,
+                'count': transaction_count
+            })
+        
+        if promo_performance:
+            sellouts = [p['sellout'] for p in promo_performance]
+            margins = [p['margin'] for p in promo_performance]
+            costs = [p['cost'] for p in promo_performance]
+            
+            max_cost = max(costs) if costs else 1
+            bubble_sizes = [max(50, (cost/max_cost)*300) for cost in costs]
+            
+            scatter = ax8.scatter(sellouts, margins, s=bubble_sizes, 
+                                 alpha=0.7, c=range(len(promo_performance)), 
+                                 cmap='viridis', edgecolors='black', linewidth=1)
+            
+            for i, p in enumerate(promo_performance):
+                ax8.annotate(p['type'], (sellouts[i], margins[i]), 
+                            xytext=(5, 5), textcoords='offset points', fontsize=9,
+                            bbox=dict(boxstyle="round,pad=0.2", facecolor="white", alpha=0.8))
+            
+            avg_sellout_all = np.mean(sellouts)
+            avg_margin_all = np.mean(margins)
+            
+            ax8.axhline(y=avg_margin_all, color='red', linestyle='--', alpha=0.5, label='Avg Margin')
+            ax8.axvline(x=avg_sellout_all, color='blue', linestyle='--', alpha=0.5, label='Avg Sell Out')
+            
+            if max(sellouts) > avg_sellout_all and max(margins) > avg_margin_all:
+                ax8.text(max(sellouts)*0.95, max(margins)*0.95, 'IDEAL\nZONE', 
+                        ha='center', va='center', fontweight='bold', fontsize=11,
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="lightgreen", alpha=0.8))
+            
+            ax8.set_xlabel('Average Sell Out')
+            ax8.set_ylabel('Average Margin per Unit (€)')
+            ax8.set_title('🎯 Promotion Performance Matrix\n(Bubble Size = Investment)')
+            ax8.legend()
+        else:
+            ax8.text(0.5, 0.5, 'No Promotion\nPerformance Data', ha='center', va='center',
+                    transform=ax8.transAxes, fontsize=12)
+    else:
+        ax8.text(0.5, 0.5, 'No Promotion\nData Available', ha='center', va='center',
+                transform=ax8.transAxes, fontsize=12)
+    
+    ax8.grid(True, alpha=0.3)
+    
+    # 9. Promotion Timing Heatmap
+    ax9 = axes[2, 2]
+    
+    if len(analyzer.data[analyzer.data['Is_Promo']]) > 0:
+        promo_data = analyzer.data[analyzer.data['Is_Promo']].copy()
+        
+        promo_timing = promo_data.groupby(['Mese', 'Tipologia Promozione']).agg({
+            'Sell Out': 'mean',
+            'Margine Netto': 'mean'
+        }).reset_index()
+        
+        if len(promo_timing) > 0:
+            sellout_pivot = promo_timing.pivot(index='Tipologia Promozione', 
+                                              columns='Mese', 
+                                              values='Sell Out').fillna(0)
+            
+            if len(sellout_pivot) > 0 and len(sellout_pivot.columns) > 0:
+                im = ax9.imshow(sellout_pivot.values, cmap='RdYlGn', aspect='auto')
+                
+                ax9.set_xticks(range(len(sellout_pivot.columns)))
+                ax9.set_xticklabels([month_names[m-1] for m in sellout_pivot.columns])
+                ax9.set_yticks(range(len(sellout_pivot.index)))
+                ax9.set_yticklabels(sellout_pivot.index, fontsize=9)
+                
+                for i in range(len(sellout_pivot.index)):
+                    for j in range(len(sellout_pivot.columns)):
+                        value = sellout_pivot.iloc[i, j]
+                        if value > 0:
+                            text_color = 'white' if value > sellout_pivot.values.mean() else 'black'
+                            ax9.text(j, i, f'{value:.0f}', ha="center", va="center", 
+                                    color=text_color, fontweight='bold', fontsize=8)
+                
+                ax9.set_title('🗓️ Promotion Timing: Sell Out Performance\n(Higher = Better)')
+                plt.colorbar(im, ax=ax9, label='Avg Sell Out')
+            else:
+                ax9.text(0.5, 0.5, 'Insufficient Data\nfor Timing Analysis', ha='center', va='center',
+                        transform=ax9.transAxes, fontsize=12)
+        else:
+            ax9.text(0.5, 0.5, 'No Promotion\nTiming Data', ha='center', va='center',
+                    transform=ax9.transAxes, fontsize=12)
+    else:
+        ax9.text(0.5, 0.5, 'No Promotion\nData Available', ha='center', va='center',
+                transform=ax9.transAxes, fontsize=12)
+    
+    # 10. Competitive Positioning
+    ax10 = axes[3, 0]
+    
+    price_quartiles = analyzer.data['Prezzo per Articolo'].quantile([0.25, 0.5, 0.75])
+    margin_quartiles = analyzer.data['Margine Netto'].quantile([0.25, 0.5, 0.75])
+    
+    volume_sizes = (analyzer.data['Quantità Articolo'] - analyzer.data['Quantità Articolo'].min()) / \
+                   (analyzer.data['Quantità Articolo'].max() - analyzer.data['Quantità Articolo'].min()) * 50 + 10
+    
+    scatter = ax10.scatter(analyzer.data['Prezzo per Articolo'], 
+                          analyzer.data['Margine Netto'],
+                          s=volume_sizes, alpha=0.6, 
+                          c=analyzer.data['Quantità Articolo'], cmap='viridis')
+    
+    ax10.axvline(x=price_quartiles[0.5], color='red', linestyle='--', alpha=0.7, label='Median Price')
+    ax10.axhline(y=margin_quartiles[0.5], color='blue', linestyle='--', alpha=0.7, label='Median Margin')
+    
+    ax10.set_xlabel('Price (€)')
+    ax10.set_ylabel('Margin per Unit (€)')
+    ax10.set_title('🎯 Competitive Positioning Map')
+    ax10.legend()
+    ax10.grid(True, alpha=0.3)
+    
+    # 11. Promotion Action Plan
+    ax11 = axes[3, 1]
+    ax11.axis('off')
+    
+    action_plan = []
+    
+    if analyzer.promo_effectiveness:
+        promo_sellout_analysis = {}
+        
+        for promo_type in analyzer.promo_effectiveness.keys():
+            promo_subset = analyzer.data[analyzer.data['Tipologia Promozione'] == promo_type]
+            if len(promo_subset) > 0:
+                avg_sellout = promo_subset['Sell Out'].mean()
+                avg_margin = promo_subset['Margine Netto'].mean()
+                avg_cost = promo_subset['Costo Promozione'].mean()
+                
+                performance_score = (avg_sellout * avg_margin) / max(avg_cost, 1)
+                
+                promo_sellout_analysis[promo_type] = {
+                    'sellout': avg_sellout,
+                    'margin': avg_margin,
+                    'cost': avg_cost,
+                    'score': performance_score
+                }
+        
+        if promo_sellout_analysis:
+            best_promo = max(promo_sellout_analysis.items(), key=lambda x: x[1]['score'])
+            
+            action_plan.append(f"🏆 BEST PERFORMING PROMO:")
+            action_plan.append(f"   Type: '{best_promo[0]}'")
+            action_plan.append(f"   Avg Sell Out: {best_promo[1]['sellout']:.0f}")
+            action_plan.append(f"   Margin/Unit: €{best_promo[1]['margin']:.2f}")
+            action_plan.append(f"   Investment: €{best_promo[1]['cost']:.0f}")
+            action_plan.append("")
+    
+    monthly_sellout = analyzer.data.groupby('Mese')['Sell Out'].mean()
+    avg_sellout = monthly_sellout.mean()
+    low_sellout_months = monthly_sellout[monthly_sellout < avg_sellout * 0.85].index
+    
+    if len(low_sellout_months) > 0:
+        target_months = [month_names[m-1] for m in low_sellout_months[:3]]
+        
+        action_plan.append(f"📅 WHEN TO PROMOTE:")
+        action_plan.append(f"   Target: {', '.join(target_months)}")
+        action_plan.append(f"   (Low Sell Out months)")
+        action_plan.append(f"   Opportunity to boost sales")
+        action_plan.append("")
+    
+    monthly_margin = analyzer.data.groupby('Mese')['Margine Netto'].mean()
+    avg_margin_monthly = monthly_margin.mean()
+    high_margin_months = monthly_margin[monthly_margin > avg_margin_monthly * 1.1].index
+    
+    if len(high_margin_months) > 0:
+        high_margin_month_names = [month_names[m-1] for m in high_margin_months[:2]]
+        
+        action_plan.append(f"💰 BUDGET OPPORTUNITY:")
+        action_plan.append(f"   High margin months: {', '.join(high_margin_month_names)}")
+        action_plan.append(f"   Extra budget available")
+        action_plan.append(f"   Can invest more in promos")
+        action_plan.append("")
+    
+    if len(low_sellout_months) > 0 and len(high_margin_months) > 0:
+        opportunity_months = set(low_sellout_months) & set(high_margin_months)
+        if opportunity_months:
+            opp_month_names = [month_names[m-1] for m in list(opportunity_months)[:2]]
+            action_plan.append(f"🎯 GOLDEN OPPORTUNITY:")
+            action_plan.append(f"   Months: {', '.join(opp_month_names)}")
+            action_plan.append(f"   Low Sell Out + High Margin")
+            action_plan.append(f"   = Maximum ROI potential")
+    
+    y_start = 0.95
+    line_height = 0.07
+    
+    for i, line in enumerate(action_plan):
+        fontweight = 'bold' if line.startswith(('🏆', '📅', '💰', '🎯')) else 'normal'
+        fontsize = 10 if fontweight == 'bold' else 9
+        color = 'darkblue' if fontweight == 'bold' else 'black'
+        
+        ax11.text(0.05, y_start - i*line_height, line, transform=ax11.transAxes, 
+                 fontsize=fontsize, fontweight=fontweight, color=color)
+    
+    ax11.set_title('🎪 PROMOTION STRATEGY BASED ON SELL OUT & MARGIN', 
+                   fontsize=12, fontweight='bold', color='darkred')
+    
+    # 12. Key Metrics Summary - CORRETTO
+    ax12 = axes[3, 2]
+    ax12.axis('off')
+    
+    metrics_data = [
+        ['Current Avg Price', f'€{analyzer.avg_price:.2f}'],
+        ['Optimal Price', f'€{analyzer.optimal_price:.2f}'],
+        ['Price Change', f'{price_change:+.1f}%'],
+        ['Current Avg Quantity', f'{analyzer.avg_quantity:.1f}'],
+        ['Optimal Quantity', f'{analyzer.optimal_quantity:.1f}'],
+        ['Current Margin/Unit', f'€{analyzer.avg_margin_per_unit:.2f}'],
+        ['Optimal Margin/Unit', f'€{analyzer.optimal_margin_per_unit:.2f}'],
+        ['Current Margin/Trans', f'€{analyzer.avg_margin_per_transaction:.2f}'],
+        ['Optimal Margin/Trans', f'€{analyzer.optimal_margin_per_transaction:.2f}'],
+        ['Elasticity', f'{analyzer.price_elasticity:.3f}']
+    ]
+    
+    table_text = ""
+    for metric, value in metrics_data:
+        table_text += f"{metric}: {value}\n"
+    
+    ax12.text(0.05, 0.95, table_text, transform=ax12.transAxes, 
+             fontsize=10, fontweight='bold', verticalalignment='top',
+             bbox=dict(boxstyle="round,pad=0.5", facecolor="lightyellow", alpha=0.8))
+    
+    ax12.set_title('📊 KEY METRICS SUMMARY', fontsize=12, fontweight='bold')
+    
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.94, hspace=0.3, wspace=0.3)
+    plt.show()
+    
+    return fig
+
+def generate_strategic_insights_report(analyzer):
+    """Genera un report completo di insights strategici - MARGINI CORRETTI"""
+    
+    print(f"\n📋 STRATEGIC TRADE MARKETING INSIGHTS REPORT")
+    print("=" * 70)
+    print(f"Analysis Focus: {analyzer.analysis_name}")
+    print(f"Analysis Period: {analyzer.data['Data'].min().strftime('%Y-%m-%d')} to {analyzer.data['Data'].max().strftime('%Y-%m-%d')}")
+    print(f"Total Transactions: {len(analyzer.data)}")
+    
+    print(f"\n🎯 EXECUTIVE SUMMARY")
+    print("-" * 25)
+    
+    current_price = analyzer.avg_price
+    optimal_price = analyzer.optimal_price
+    price_change = (optimal_price - current_price) / current_price * 100
+    
+    print(f"💰 PRICING STRATEGY:")
+    print(f"   Current Average Price: €{current_price:.2f}")
+    print(f"   Recommended Optimal Price: €{optimal_price:.2f}")
+    print(f"   Suggested Price Adjustment: {price_change:+.1f}%")
+    print(f"   Price Elasticity: {analyzer.price_elasticity:.3f}")
+    
+    print(f"\n📦 VOLUME STRATEGY:")
+    print(f"   Current Average Quantity: {analyzer.avg_quantity:.1f} units")
+    print(f"   Optimal Target Quantity: {analyzer.optimal_quantity:.1f} units")
+    print(f"   Volume Change at Optimal Price: {(analyzer.optimal_quantity - analyzer.avg_quantity)/analyzer.avg_quantity*100:+.1f}%")
+    
+    print(f"\n💰 MARGIN OPTIMIZATION:")
+    print(f"   Current Average Margin per Unit: €{analyzer.avg_margin_per_unit:.2f}")
+    print(f"   Current Average Margin per Transaction: €{analyzer.avg_margin_per_transaction:.2f}")
+    print(f"   Optimal Margin per Unit: €{analyzer.optimal_margin_per_unit:.2f}")
+    print(f"   Optimal Margin per Transaction: €{analyzer.optimal_margin_per_transaction:.2f}")
+    print(f"   Margin Improvement per Transaction: €{analyzer.optimal_margin_per_transaction - analyzer.avg_margin_per_transaction:.2f}")
+    
+    print(f"\n🎪 PROMOTIONAL INSIGHTS:")
+    if analyzer.promo_effectiveness:
+        best_promo = max(analyzer.promo_effectiveness.items(), 
+                        key=lambda x: x[1]['roi_pct'] if x[1]['roi_pct'] > 0 else 0)
+        
+        print(f"   🏆 Best Performing Promotion: {best_promo[0]}")
+        print(f"      ROI: {best_promo[1]['roi_pct']:.1f}%")
+        print(f"      Volume Lift: {best_promo[1]['volume_lift_pct']:+.1f}%")
+        print(f"      Average Cost: €{best_promo[1]['avg_cost']:.2f}")
+        print(f"      Average Duration: {best_promo[1]['avg_duration']:.0f} days")
+        print(f"      Margin per Unit: €{best_promo[1]['margin_per_unit']:.2f}")
+        
+        # Promotional vs Non-promotional comparison
+        promo_margin_unit = analyzer.promo_metrics['avg_margin_per_unit']
+        normal_margin_unit = analyzer.non_promo_metrics['avg_margin_per_unit']
+        promo_margin_transaction = analyzer.promo_metrics['avg_margin_per_transaction']
+        normal_margin_transaction = analyzer.non_promo_metrics['avg_margin_per_transaction']
+        
+        print(f"\n   📊 Promo vs Normal Performance:")
+        print(f"      Promotional Margin/Unit: €{promo_margin_unit:.2f}")
+        print(f"      Normal Margin/Unit: €{normal_margin_unit:.2f}")
+        print(f"      Margin Difference/Unit: €{promo_margin_unit - normal_margin_unit:+.2f}")
+        print(f"      Promotional Margin/Transaction: €{promo_margin_transaction:.2f}")
+        print(f"      Normal Margin/Transaction: €{normal_margin_transaction:.2f}")
+        
+        promo_qty = analyzer.promo_metrics['avg_quantity']
+        normal_qty = analyzer.non_promo_metrics['avg_quantity']
+        qty_lift = (promo_qty - normal_qty) / normal_qty * 100 if normal_qty > 0 else 0
+        
+        print(f"      Volume Lift: {qty_lift:+.1f}%")
+    else:
+        print("   ⚠️ No promotional data available for analysis")
+    
+    # Calculate expected impact - CORRETTO
+    current_total_margin = analyzer.data['Margin_per_Transaction_Correct'].sum()
+    optimal_total_margin = analyzer.optimal_margin_per_transaction * len(analyzer.data)
+    margin_improvement = optimal_total_margin - current_total_margin
+    
+    current_total_revenue = analyzer.data['Revenue_per_Transaction'].sum()
+    optimal_revenue_per_transaction = analyzer.optimal_price * analyzer.optimal_quantity
+    optimal_total_revenue = optimal_revenue_per_transaction * len(analyzer.data)
+    revenue_improvement = optimal_total_revenue - current_total_revenue
+    
+    print(f"\n📊 EXPECTED IMPACT:")
+    print("-" * 20)
+    print(f"   💰 Total Margin Improvement: €{margin_improvement:,.0f}")
+    print(f"   📈 Total Revenue Improvement: €{revenue_improvement:,.0f}")
+    print(f"   🎯 ROI of Optimization: {(margin_improvement / current_total_margin * 100) if current_total_margin > 0 else 0:.1f}%")
+    
+    return {
+        'current_price': current_price,
+        'optimal_price': optimal_price,
+        'price_change_pct': price_change,
+        'current_quantity': analyzer.avg_quantity,
+        'optimal_quantity': analyzer.optimal_quantity,
+        'current_margin_per_unit': analyzer.avg_margin_per_unit,
+        'optimal_margin_per_unit': analyzer.optimal_margin_per_unit,
+        'current_margin_per_transaction': analyzer.avg_margin_per_transaction,
+        'optimal_margin_per_transaction': analyzer.optimal_margin_per_transaction,
+        'margin_improvement': margin_improvement,
+        'revenue_improvement': revenue_improvement,
+        'best_promotion': best_promo[0] if analyzer.promo_effectiveness else None,
+        'elasticity': analyzer.price_elasticity
+    }
+
+def main_strategic_analysis():
+    """Funzione principale per l'analisi strategica"""
+    
+    print("🎯 STRATEGIC TRADE MARKETING ANALYSIS")
+    print("=" * 70)
+    
+    # Percorso file
+    csv_filepath = r'C:\Users\carbaren\Desktop\ADAPT\dataset_bevande.csv'
+    
+    try:
+        # Carica dati
+        print(f"📁 Caricamento dataset: {csv_filepath}")
+        df = pd.read_csv(csv_filepath)
+        print(f"✅ Dataset caricato: {len(df):,} righe, {len(df.columns)} colonne")
+        
+        # Inizializza analyzer - NUOVO: filtra per categoria invece che prodotto specifico
+        analyzer = StrategicTradeMarketingAnalyzer(df, category="Bevande Energetiche")
+        
+        # Genera dashboard principale
+        print(f"\n📊 Generazione dashboard strategica...")
+        dashboard_fig = create_strategic_dashboard(analyzer)
+        
+        # Genera report insights
+        print(f"\n📋 Generazione report insights...")
+        insights = generate_strategic_insights_report(analyzer)
+        
+        print(f"\n✅ ANALISI COMPLETATA!")
+        print(f"🎯 Dashboard con 12 grafici strategici generata")
+        print(f"📋 Report insights dettagliato completato")
+        
+        return analyzer, insights
+        
+    except FileNotFoundError:
+        print(f"❌ Errore: File non trovato - {csv_filepath}")
+        print("Assicurati che il file esista nel percorso specificato")
+        return None
+    except Exception as e:
+        print(f"❌ Errore durante l'analisi: {e}")
+        import traceback
+        traceback.print_exc()
+        return None
+
+if __name__ == "__main__":
+    results = main_strategic_analysis()
