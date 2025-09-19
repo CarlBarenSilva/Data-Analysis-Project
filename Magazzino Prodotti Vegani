@@ -1,0 +1,136 @@
+import os
+import json
+
+# Nome del file per la persistenza dei dati
+FILE_PATH = "magazzino.json"
+
+# Funzione per caricare i dati dal file
+def carica_dati():
+    if os.path.exists(FILE_PATH):
+        with open(FILE_PATH, 'r') as f:
+            return json.load(f)
+    return {}
+
+# Funzione per salvare i dati nel file
+def salva_dati(dati):
+    with open(FILE_PATH, 'w') as f:
+        json.dump(dati, f, indent=4)
+
+# Funzione per aggiungere un prodotto al magazzino
+def aggiungi_prodotto(magazzino):
+    nome = input("Nome del prodotto: ")
+    try:
+        quantita = int(input("Quantità: "))
+        prezzo_acquisto = float(input("Prezzo di acquisto: "))
+        prezzo_vendita = float(input("Prezzo di vendita: "))
+    except ValueError:
+        print("Input non valido, riprova.")
+        return magazzino
+
+    if nome in magazzino:
+        magazzino[nome]['quantita'] += quantita
+        print(f"AGGIUNTO: {quantita} X {nome}")
+    else:
+        magazzino[nome] = {
+            'quantita': quantita,
+            'prezzo_acquisto': prezzo_acquisto,
+            'prezzo_vendita': prezzo_vendita
+        }
+        print(f"AGGIUNTO: {quantita} X {nome}")
+
+    salva_dati(magazzino)
+    return magazzino
+
+# Funzione per elencare i prodotti nel magazzino
+def elenca_prodotti(magazzino):
+    print("PRODOTTO QUANTITA' PREZZO")
+    for prodotto, info in magazzino.items():
+        print(f"{prodotto} {info['quantita']} €{info['prezzo_vendita']}")
+
+# Funzione per registrare una vendita
+def registra_vendita(magazzino):
+    vendita = []
+    totale_vendita = 0
+    while True:
+        nome = input("Nome del prodotto: ")
+        if nome not in magazzino:
+            print("Prodotto non disponibile.")
+            continue
+        try:
+            quantita = int(input("Quantità: "))
+            if quantita > magazzino[nome]['quantita']:
+                print("Quantità non sufficiente.")
+                continue
+        except ValueError:
+            print("Input non valido, riprova.")
+            continue
+
+        magazzino[nome]['quantita'] -= quantita
+        prezzo_totale = quantita * magazzino[nome]['prezzo_vendita']
+        vendita.append((nome, quantita, magazzino[nome]['prezzo_vendita'], prezzo_totale))
+        totale_vendita += prezzo_totale
+
+        altro = input("Aggiungere un altro prodotto? (si/no): ").lower()
+        if altro != 'si':
+            break
+
+    print("\nVENDITA REGISTRATA")
+    for prodotto, quantita, prezzo, totale in vendita:
+        print(f"{quantita} X {prodotto}: €{prezzo}")
+    print(f"Totale: €{totale_vendita:.2f}")
+
+    salva_dati(magazzino)
+
+# Funzione per calcolare i profitti
+def mostra_profitti(magazzino):
+    profitti_lordi = 0
+    profitti_netti = 0
+    for info in magazzino.values():
+        quantita = info['quantita']
+        prezzo_acquisto = info['prezzo_acquisto']
+        prezzo_vendita = info['prezzo_vendita']
+
+        profitti_lordi += (prezzo_vendita - prezzo_acquisto) * quantita
+        profitti_netti += (prezzo_vendita - prezzo_acquisto) * quantita
+
+    print(f"\nProfitto: lordo=€{profitti_lordi:.2f} netto=€{profitti_netti:.2f}")
+
+# Funzione per mostrare il menu di aiuto
+def menu_aiuto():
+    print("""
+    I comandi disponibili sono i seguenti:
+    aggiungi: aggiungi un prodotto al magazzino
+    elenca: elenca i prodotti in magazzino
+    vendita: registra una vendita effettuata
+    profitti: mostra i profitti totali
+    aiuto: mostra i possibili comandi
+    chiudi: esci dal programma
+    """)
+
+# Funzione principale del programma
+def main():
+    magazzino = carica_dati()
+
+    while True:
+        comando = input("Inserisci un comando: ").lower()
+
+        if comando == "aggiungi":
+            magazzino = aggiungi_prodotto(magazzino)
+        elif comando == "elenca":
+            elenca_prodotti(magazzino)
+        elif comando == "vendita":
+            registra_vendita(magazzino)
+        elif comando == "profitti":
+            mostra_profitti(magazzino)
+        elif comando == "aiuto":
+            menu_aiuto()
+        elif comando == "chiudi":
+            print("Bye bye")
+            break
+        else:
+            print("Comando non valido")
+            menu_aiuto()
+
+# Esegui il programma
+if __name__ == "__main__":
+    main()
