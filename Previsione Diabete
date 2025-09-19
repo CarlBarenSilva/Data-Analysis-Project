@@ -1,0 +1,149 @@
+# Importiamo le librerie necessarie
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.datasets import load_diabetes
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.linear_model import LinearRegression, LassoCV
+from sklearn.metrics import mean_squared_error, r2_score
+import pickle
+
+# 1. Caricamento del Dataset
+print("Caricamento del dataset...")
+
+# Caricamento del dataset senza scalarlo
+diabetes_data = load_diabetes(scaled=False)
+
+# Converting the data to a pandas DataFrame
+X = pd.DataFrame(diabetes_data.data, columns=diabetes_data.feature_names)
+y = pd.Series(diabetes_data.target)
+
+print("Caricamento completato!")
+
+# 2. Analisi Esplorativa dei Dati (EDA)
+print("Esecuzione dell'analisi esplorativa dei dati...")
+
+# Visualizzazione delle prime righe dei dati
+print("Prime righe dei dati:")
+print(X.head())
+
+# Creiamo una heatmap delle correlazioni tra le variabili
+plt.figure(figsize=(10, 8))
+sns.heatmap(X.corr(), annot=True, cmap='coolwarm', fmt='.2f')
+plt.title('Correlazione tra le variabili del dataset')
+plt.show()
+
+# Commento: Le correlazioni mostrate nella heatmap ci aiutano a capire quali variabili sono fortemente correlate tra loro.
+# Se due variabili sono altamente correlate, potrebbe essere utile considerare l'uso di una sola di esse nel modello,
+# al fine di evitare problemi di multicollinearità.
+
+# Creiamo uno scatter plot tra alcune variabili e la progressione del diabete
+sns.pairplot(pd.concat([X, y], axis=1), diag_kind='kde')
+plt.show()
+
+# Commento: La matrice di scatter plot ci permette di visualizzare rapidamente come le variabili influenzano la variabile target.
+# Se notiamo delle relazioni non lineari, potremmo considerare l'uso di modelli non lineari o trasformazioni delle variabili.
+
+# 3. Pulizia e Pre-processing dei Dati
+# Controlliamo se ci sono valori mancanti
+print("Controllo valori mancanti:")
+print(X.isnull().sum())
+
+# Commento: In questo dataset non ci sono valori mancanti, quindi possiamo proseguire senza necessità di imputazione.
+
+# 4. Standardizzazione delle variabili numeriche
+print("Standardizzazione delle variabili...")
+
+# Creiamo il train-test split prima della standardizzazione
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+
+# Ora standardizziamo separatamente il training set e il test set
+scaler = StandardScaler()
+X_train_scaled = scaler.fit_transform(X_train)  # Fit e trasformazione su X_train
+X_test_scaled = scaler.transform(X_test)  # Trasformazione di X_test utilizzando i parametri di X_train
+
+# 5. Selezione delle Variabili tramite Regressione Lasso
+print("Selezione delle variabili tramite regressione Lasso...")
+
+# Creiamo un modello Lasso per la selezione delle variabili più rilevanti
+lasso = LassoCV(cv=5)
+lasso.fit(X_train_scaled, y_train)
+
+# Visualizzazione dei coefficienti per ciascuna variabile
+coef = pd.Series(lasso.coef_, index=X.columns)
+print(coef)
+
+# Identifichiamo le variabili più influenti
+selected_features = coef[coef != 0].index
+print(f"Variabili selezionate: {selected_features}")
+
+# 6. Creazione dei Modelli
+print("Creazione dei modelli...")
+
+# Modello 1: Con tutte le variabili
+model_full = LinearRegression()
+model_full.fit(X_train_scaled, y_train)
+
+# Previsioni con il modello completo
+y_pred_full = model_full.predict(X_test_scaled)
+
+# Modello 2: Con le variabili selezionate tramite Lasso
+X_train_selected = X_train_scaled[:, [X.columns.get_loc(col) for col in selected_features]]
+X_test_selected = X_test_scaled[:, [X.columns.get_loc(col) for col in selected_features]]
+
+model_selected = LinearRegression()
+model_selected.fit(X_train_selected, y_train)
+
+# Previsioni con il modello selezionato
+y_pred_selected = model_selected.predict(X_test_selected)
+
+# 7. Valutazione dei Modelli
+# Calcoliamo il Mean Squared Error (MSE) e il R-squared (R²) per entrambi i modelli
+mse_full = mean_squared_error(y_test, y_pred_full)
+r2_full = r2_score(y_test, y_pred_full)
+
+mse_selected = mean_squared_error(y_test, y_pred_selected)
+r2_selected = r2_score(y_test, y_pred_selected)
+
+print(f"Modello con tutte le variabili - MSE: {mse_full:.2f}, R²: {r2_full:.2f}")
+print(f"Modello con variabili selezionate - MSE: {mse_selected:.2f}, R²: {r2_selected:.2f}")
+
+# Visualizziamo la previsione rispetto ai valori reali per entrambi i modelli
+plt.figure(figsize=(8, 6))
+plt.subplot(1, 2, 1)
+plt.scatter(y_test, y_pred_full)
+plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], '--r', lw=2)
+plt.xlabel('Valori Reali')
+plt.ylabel('Valori Predetti')
+plt.title('Modello con tutte le variabili')
+
+plt.subplot(1, 2, 2)
+plt.scatter(y_test, y_pred_selected)
+plt.plot([y_test.min(), y_test.max()], [y_test.min(), y_test.max()], '--r', lw=2)
+plt.xlabel('Valori Reali')
+plt.ylabel('Valori Predetti')
+plt.title('Modello con variabili selezionate')
+
+plt.tight_layout()
+plt.show()
+
+# Commento: I grafici di dispersione ci aiutano a capire se il modello è riuscito a predire bene i valori. Se i punti sono vicini alla linea rossa,
+# significa che la previsione è stata corretta. Un modello con R² più alto è più efficace nel prevedere la variabile target.
+
+# 8. Esportazione del Modello
+print("Esportazione del modello...")
+
+# Salviamo entrambi i modelli con pickle
+with open('diabetes_predictor_model_full.pkl', 'wb') as f:
+    pickle.dump(model_full, f)
+
+with open('diabetes_predictor_model_selected.pkl', 'wb') as f:
+    pickle.dump(model_selected, f)
+
+# Salviamo anche lo scaler per future predizioni
+with open('scaler.pkl', 'wb') as f:
+    pickle.dump(scaler, f)
+
+print("Modelli e scaler esportati con successo!")
