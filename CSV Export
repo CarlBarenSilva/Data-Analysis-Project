@@ -1,0 +1,230 @@
+#Discount
+import os
+import csv
+import sqlite3
+from datetime import datetime
+
+def create_database_from_csv():
+    """
+    Crea un database SQLite a partire da un file CSV e genera un file CSV 
+    con le date in un'unica colonna e le misure come colonne separate.
+    """
+    # Definizione dei percorsi
+    input_file_path = r"C:\Users\carbaren\Desktop\ADAPT PROJECT\Focus per canali lav liq discount.csv"
+    output_folder = r"C:\Users\carbaren\Desktop\ADAPT"
+    output_db_path = os.path.join(output_folder, "focus_canali_database.db discount")
+    output_csv_path = os.path.join(output_folder, "focus_canali_elaborato discount.csv")
+    
+    # Crea la cartella di output se non esiste
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+        print(f"Cartella creata: {output_folder}")
+    
+    print(f"Lettura del file CSV: {input_file_path}")
+    
+    # Verifica che il file di input esista
+    if not os.path.exists(input_file_path):
+        print(f"ERRORE: Il file {input_file_path} non esiste!")
+        return False
+    
+    # Crea il database SQLite
+    conn = sqlite3.connect(output_db_path)
+    cursor = conn.cursor()
+    
+    # Crea la tabella principale
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS vendite_settimanali (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        foglio TEXT,
+        measure TEXT,
+        data_fine_settimana TEXT,
+        valore REAL
+    )
+    ''')
+    
+    # Crea la tabella per le statistiche
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS statistiche_vendite (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        foglio TEXT,
+        measure TEXT,
+        periodo TEXT,
+        valore_totale REAL,
+        valore_medio REAL,
+        valore_minimo REAL,
+        valore_massimo REAL,
+        data_aggiornamento TEXT
+    )
+    ''')
+    
+    print("Tabelle database create con successo.")
+    
+    # Leggi il file CSV
+    all_data = []
+    foglio_corrente = "1"  # Inizia dal foglio 1
+    all_measures = set()  # Per tenere traccia di tutte le misure
+    
+    try:
+        with open(input_file_path, 'r', encoding='utf-8') as csv_file:
+            # Usa csv.reader con il separatore punto e virgola
+            csv_reader = csv.reader(csv_file, delimiter=';')
+            headers = next(csv_reader)  # Leggi la riga di intestazione
+            
+            # Controlla che ci siano intestazioni
+            if len(headers) <= 1:
+                print("Errore: intestazioni non valide nel file CSV.")
+                return False
+            
+            print(f"Trovate {len(headers)} colonne nel file CSV.")
+            
+            # Le date iniziano dalla seconda colonna (indice 1)
+            dates = headers[1:]
+            
+            # Leggi le righe di dati
+            for row in csv_reader:
+                if not row or len(row) <= 1:
+                    # Se è una riga vuota o con un solo valore, potrebbe essere un separatore tra fogli
+                    # In quel caso, incrementiamo il numero del foglio
+                    if len(row) == 0 or (len(row) == 1 and not row[0].strip()):
+                        foglio_corrente = str(int(foglio_corrente) + 1)
+                        print(f"Passando al foglio {foglio_corrente}")
+                    continue
+                
+                # La prima colonna contiene la misura
+                measure = row[0].strip()
+                all_measures.add(measure)  # Aggiungi alla lista delle misure
+                
+                # Per ogni data, crea un record
+                for i, date_str in enumerate(dates):
+                    if i + 1 >= len(row):
+                        continue  # Salta se non ci sono dati per questa colonna
+                    
+                    # Ottieni il valore e converti in numero
+                    value_str = row[i + 1].strip()
+                    if not value_str:
+                        continue  # Salta valori vuoti
+                    
+                    # Rimuovi punti usati come separatori delle migliaia e sostituisci virgole con punti
+                    value_str = value_str.replace('.', '').replace(',', '.')
+                    
+                    try:
+                        value_float = float(value_str)
+                    except ValueError:
+                        print(f"Saltato valore non numerico: {value_str} per {measure} in {date_str}")
+                        continue
+                    
+                    # Pulisci la stringa della data
+                    date_clean = date_str.replace('Settimana Terminante al ', '')
+                    
+                    # Aggiungi all'array per il report
+                    all_data.append((foglio_corrente, measure, date_clean, value_float))
+                    
+                    # Inserisci nel database
+                    cursor.execute('''
+                    INSERT INTO vendite_settimanali (foglio, measure, data_fine_settimana, valore)
+                    VALUES (?, ?, ?, ?)
+                    ''', (foglio_corrente, measure, date_clean, value_float))
+            
+            print(f"Dati letti e inseriti nel database: {len(all_data)} record.")
+    except Exception as e:
+        print(f"Errore durante la lettura del file CSV: {str(e)}")
+        return False
+    
+    # Calcola statistiche e inseriscile nel database
+    try:
+        # Per ogni combinazione di foglio e misura
+        cursor.execute("SELECT DISTINCT foglio, measure FROM vendite_settimanali")
+        combinations = cursor.fetchall()
+        
+        for foglio, measure in combinations:
+            # Ottieni i dati per questa combinazione
+            cursor.execute('''
+            SELECT valore FROM vendite_settimanali 
+            WHERE foglio = ? AND measure = ?
+            ''', (foglio, measure))
+            
+            values = [row[0] for row in cursor.fetchall() if row[0] is not None]
+            
+            if values:
+                total = sum(values)
+                average = total / len(values)
+                minimum = min(values)
+                maximum = max(values)
+                
+                # Inserisci le statistiche
+                cursor.execute('''
+                INSERT INTO statistiche_vendite 
+                (foglio, measure, periodo, valore_totale, valore_medio, valore_minimo, valore_massimo, data_aggiornamento)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (foglio, measure, 'Totale', total, average, minimum, maximum, 
+                      datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        
+        print("Statistiche calcolate e inserite nel database.")
+    except Exception as e:
+        print(f"Errore durante il calcolo delle statistiche: {str(e)}")
+    
+    # Crea una vista per accedere facilmente ai dati
+    cursor.execute('''
+    CREATE VIEW IF NOT EXISTS vendite_per_foglio_data AS
+    SELECT 
+        foglio,
+        measure,
+        data_fine_settimana,
+        valore
+    FROM vendite_settimanali
+    ORDER BY foglio, measure, data_fine_settimana
+    ''')
+    
+    # Commit e chiudi il database
+    conn.commit()
+    conn.close()
+    
+    # Crea un CSV con le date in un'unica colonna e le misure come colonne
+    try:
+        print("\nCreazione del CSV con date in colonna e misure come intestazioni...")
+        
+        # Ottieni tutte le date uniche e misure uniche
+        unique_dates = sorted(set(date for _, _, date, _ in all_data))
+        all_measures_list = sorted(all_measures)
+        
+        # Crea un dizionario per organizzare i dati per foglio e data
+        data_by_foglio_date = {}
+        
+        for foglio, measure, date, value in all_data:
+            key = f"{foglio}|{date}"
+            if key not in data_by_foglio_date:
+                data_by_foglio_date[key] = {'Foglio': foglio, 'Data': date}
+            
+            # Aggiungi il valore per questa misura
+            data_by_foglio_date[key][measure] = value
+        
+        # Scrivi il CSV
+        with open(output_csv_path, 'w', newline='', encoding='utf-8') as f:
+            # Crea l'intestazione: Foglio, Data, + tutte le misure
+            fieldnames = ['Foglio', 'Data'] + all_measures_list
+            
+            # Crea il writer con queste intestazioni
+            csv_writer = csv.DictWriter(f, fieldnames=fieldnames, delimiter=';')
+            
+            # Scrivi l'intestazione
+            csv_writer.writeheader()
+            
+            # Scrivi le righe in ordine di foglio e data
+            for key in sorted(data_by_foglio_date.keys()):
+                csv_writer.writerow(data_by_foglio_date[key])
+        
+        print(f"CSV con struttura richiesta creato: {output_csv_path}")
+    except Exception as e:
+        print(f"Errore durante la creazione del CSV di output: {str(e)}")
+    
+    print("\nProcesso completato con successo!")
+    print(f"Database creato: {output_db_path}")
+    return True
+
+if __name__ == "__main__":
+    try:
+        print("Avvio del programma per creare un database da file CSV...")
+        print("=" * 50)
+        create_database_from_csv()
+    except Exception as e:
+        print(f"\nSi è verificato un errore generale: {str(e)}")
