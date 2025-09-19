@@ -1,0 +1,82 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+
+# Carica i dati
+sp500 = pd.read_csv('sp500.csv', parse_dates=['Date'], dayfirst=True)
+euro50 = pd.read_csv('euro50.csv', parse_dates=['Date'], dayfirst=True)
+
+# Imposta la colonna 'Date' come indice
+sp500.set_index('Date', inplace=True)
+euro50.set_index('Date', inplace=True)
+
+# Funzione per calcolare il rendimento percentuale
+def calculate_returns(df, period=1):
+    # Calcolo del rendimento giornaliero
+    df['Return'] = df['Close'].pct_change(periods=period) * 100
+    return df
+
+# Calcola il rendimento giornaliero
+sp500 = calculate_returns(sp500)
+euro50 = calculate_returns(euro50)
+
+# Rendimento mensile (su 20 giorni)
+sp500['Monthly Return'] = sp500['Close'].pct_change(periods=20) * 100
+euro50['Monthly Return'] = euro50['Close'].pct_change(periods=20) * 100
+
+# Rendimento annuale (su 252 giorni)
+sp500['Annual Return'] = sp500['Close'].pct_change(periods=252) * 100
+euro50['Annual Return'] = euro50['Close'].pct_change(periods=252) * 100
+# Aggiungi una colonna con il giorno della settimana
+sp500['Weekday'] = sp500.index.weekday
+euro50['Weekday'] = euro50.index.weekday
+
+# Calcola il rendimento medio giornaliero per giorno della settimana
+avg_daily_sp500 = sp500.groupby('Weekday')['Return'].mean()
+avg_daily_euro50 = euro50.groupby('Weekday')['Return'].mean()
+
+# Visualizza i risultati
+fig, ax = plt.subplots(2, 1, figsize=(10, 8))
+
+ax[0].bar(avg_daily_sp500.index, avg_daily_sp500.values)
+ax[0].set_title('Rendimento Medio Giornaliero - S&P 500')
+ax[0].set_xticks(range(7))
+ax[0].set_xticklabels(['Mon', 'Tue', 'Wed', 'Thu', 'Fri'])
+ax[0].set_ylabel('Rendimento (%)')
+
+ax[1].bar(avg_daily_euro50.index, avg_daily_euro50.values)
+ax[1].set_title('Rendimento Medio Giornaliero - EURO STOXX 50')
+ax[1].set_xticks(range(7))
+ax[1].set_xticklabels(['Mon', 'Tue', 'Wed', 'Thu', 'Fri'])
+ax[1].set_ylabel('Rendimento (%)')
+
+plt.tight_layout()
+plt.show()
+# Giorni con rendimento massimo e minimo per S&P 500
+max_return_sp500 = sp500['Return'].idxmax()
+min_return_sp500 = sp500['Return'].idxmin()
+
+# Giorni con rendimento massimo e minimo per EURO STOXX 50
+max_return_euro50 = euro50['Return'].idxmax()
+min_return_euro50 = euro50['Return'].idxmin()
+
+print("S&P 500:")
+print(f"Giorno con rendimento massimo: {max_return_sp500} - Rendimento: {sp500.loc[max_return_sp500, 'Return']:.2f}%")
+print(f"Giorno con rendimento minimo: {min_return_sp500} - Rendimento: {sp500.loc[min_return_sp500, 'Return']:.2f}%")
+
+print("\nEURO STOXX 50:")
+print(f"Giorno con rendimento massimo: {max_return_euro50} - Rendimento: {euro50.loc[max_return_euro50, 'Return']:.2f}%")
+print(f"Giorno con rendimento minimo: {min_return_euro50} - Rendimento: {euro50.loc[min_return_euro50, 'Return']:.2f}%")
+# Calcola il volume medio giornaliero
+avg_daily_volume_sp500 = sp500['Volume'].mean()
+avg_daily_volume_euro50 = euro50['Volume'].mean()
+
+print(f"Volume medio giornaliero S&P 500: {avg_daily_volume_sp500:.0f}")
+print(f"Volume medio giornaliero EURO STOXX 50: {avg_daily_volume_euro50:.0f}")
+# Grafico del volume medio giornaliero
+fig, ax = plt.subplots(figsize=(10, 6))
+
+ax.bar(['S&P 500', 'EURO STOXX 50'], [avg_daily_volume_sp500, avg_daily_volume_euro50])
+ax.set_title('Volume Medio Giornaliero')
+ax.set_ylabel('Volume Medio')
+plt.show()
