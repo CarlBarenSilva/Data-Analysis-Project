@@ -1,0 +1,403 @@
+pip install wordcloud
+from pyspark.sql import SparkSession
+import os
+import pandas as pd
+from wordcloud import WordCloud
+import matplotlib.pyplot as plt
+from pyspark.ml.classification import LogisticRegression
+from pyspark.ml.feature import HashingTF, IDF, Tokenizer
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+
+# Creiamo la sessione Spark
+spark = SparkSession.builder.appName("WikipediaClassification").getOrCreate()
+
+# Percorso di salvataggio del file in DBFS (Databricks File System)
+file_path = '/databricks/driver/wikipedia.csv'
+
+# Scarichiamo il dataset direttamente usando wget (assicurati che il file sia accessibile dal tuo ambiente)
+os.system(f'wget https://proai-datasets.s3.eu-west-3.amazonaws.com/wikipedia.csv -O {file_path}')
+
+# Carichiamo il dataset con Pandas
+dataset = pd.read_csv(file_path)
+
+# Creiamo un DataFrame Spark a partire dal DataFrame Pandas
+spark_df = spark.createDataFrame(dataset)
+
+# Rimuoviamo la colonna 'Unnamed: 0' se esiste (spesso è una colonna inutile generata dal salvataggio in CSV)
+if 'Unnamed: 0' in spark_df.columns:
+    spark_df = spark_df.drop('Unnamed: 0')
+
+# Salviamo la tabella nel catalogo metastore di Spark (questo permette di interagire con il DataFrame come una tabella)
+spark_df.write.mode('overwrite').saveAsTable("wikipedia")
+
+# Mostriamo i primi 5 record del DataFrame Spark
+spark_df.show(5)
+from pyspark.sql.functions import col
+
+# Trasformiamo le colonne in tipo stringa
+spark_df = spark_df.withColumn('title', col('title').cast('string'))  # Colonna 'title' in tipo stringa
+spark_df = spark_df.withColumn('summary', col('summary').cast('string'))  # Colonna 'summary' in tipo stringa
+spark_df = spark_df.withColumn('documents', col('documents').cast('string'))  # Colonna 'documents' in tipo stringa
+spark_df = spark_df.withColumn('categoria', col('categoria').cast('string'))  # Colonna 'categoria' in tipo stringa
+
+# Mostriamo i primi 5 record per verificarne il risultato
+spark_df.select('title', 'summary', 'documents', 'categoria').show(5)
+from pyspark.sql.functions import col, length
+
+# Rimuoviamo la colonna "Unnamed: 0" se presente (spesso è una colonna inutile generata durante l'importazione)
+if 'Unnamed: 0' in spark_df.columns:
+    spark_df = spark_df.drop('Unnamed: 0')
+
+# Assicuriamoci che la colonna 'summary' sia di tipo stringa
+spark_df = spark_df.withColumn('summary', col('summary').cast('string'))
+
+# Creiamo una nuova colonna per la lunghezza dell'articolo, che rappresenta il numero di caratteri nel 'summary'
+spark_df = spark_df.withColumn('summary_length', length(col('summary')))
+
+# Mostriamo i risultati: visualizziamo le colonne 'categoria' e 'summary_length' per i primi 20 record
+spark_df.select('categoria', 'summary_length').show(20)
+from pyspark.sql.functions import col
+import matplotlib.pyplot as plt
+
+# Conta il numero di articoli per categoria
+category_counts = spark_df.groupBy('categoria').count().orderBy('count', ascending=False)
+
+# Mostriamo la distribuzione delle categorie (i primi 10 record ordinati per numero di articoli)
+category_counts.show(10)
+
+# Esportiamo i dati in un DataFrame Pandas per visualizzarli con Matplotlib
+category_counts_pd = category_counts.toPandas()
+
+# Creiamo un grafico a barre per la distribuzione delle categorie
+category_counts_pd.plot(kind='bar', x='categoria', y='count', color='skyblue', figsize=(10, 6))
+
+# Aggiungiamo il titolo e le etichette al grafico
+plt.title("Distribuzione degli Articoli per Categoria")
+plt.xlabel("Categoria")
+plt.ylabel("Numero di Articoli")
+
+# Ruotiamo le etichette sull'asse X per una migliore leggibilità
+plt.xticks(rotation=45)
+
+# Visualizziamo il grafico
+plt.show()
+from pyspark.sql.functions import col, when
+from pyspark.ml.feature import Tokenizer, HashingTF, IDF
+from pyspark.ml import Pipeline
+
+# Trasformiamo le colonne in tipo stringa per garantire la corretta manipolazione dei dati
+spark_df = spark_df.withColumn('title', col('title').cast('string'))
+spark_df = spark_df.withColumn('summary', col('summary').cast('string'))
+spark_df = spark_df.withColumn('documents', col('documents').cast('string'))
+spark_df = spark_df.withColumn('categoria', col('categoria').cast('string'))
+
+# Sostituiamo i valori nulli nella colonna 'summary' con stringhe vuote
+spark_df = spark_df.withColumn('summary', when(col('summary').isNull(), '').otherwise(col('summary')))
+
+# Tokenizzazione del testo: ogni documento (articolo) sarà trasformato in una lista di parole
+tokenizer = Tokenizer(inputCol="summary", outputCol="words")
+
+# Creazione della rappresentazione numerica del testo usando Term Frequency (TF)
+hashing_tf = HashingTF(inputCol="words", outputCol="raw_features", numFeatures=5000)
+
+# Calcolo dell'IDF (Inverse Document Frequency) per pesare le parole
+idf = IDF(inputCol="raw_features", outputCol="features")
+
+# Creiamo una Pipeline che applicherà le trasformazioni in sequenza
+pipeline = Pipeline(stages=[tokenizer, hashing_tf, idf])
+
+# Adattiamo il modello alla nostra data pipeline e trasformiamo i dati
+model = pipeline.fit(spark_df)
+processed_df = model.transform(spark_df)
+
+# Mostriamo i risultati: visualizziamo le colonne 'summary' e 'features' (vettori numerici)
+processed_df.select("summary", "features").show(5)
+# Import delle librerie necessarie
+from pyspark.ml.feature import StopWordsRemover, CountVectorizer, Tokenizer, IDF, StringIndexer, VectorAssembler
+from pyspark.ml import Pipeline
+from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.sql import functions as F
+from pyspark import SparkConf
+from pyspark.sql import SparkSession
+from sklearn.metrics import classification_report
+
+# Configurazione di Spark per aumentare la memoria
+conf = SparkConf().set("spark.executor.memory", "4g").set("spark.driver.memory", "2g")
+spark = SparkSession.builder.config(conf=conf).appName("TextClassification").getOrCreate()
+
+# Preprocessing: Trasformazione e pulizia delle colonne
+spark_df = spark_df.withColumn('title', F.col('title').cast('string'))  # Trasforma 'title' in tipo stringa
+spark_df = spark_df.withColumn('summary', F.col('summary').cast('string'))  # Trasforma 'summary' in tipo stringa
+spark_df = spark_df.withColumn('documents', F.col('documents').cast('string'))  # Trasforma 'documents' in tipo stringa
+spark_df = spark_df.withColumn('categoria', F.col('categoria').cast('string'))  # Trasforma 'categoria' in tipo stringa
+
+# 1. Creazione dell'indice per le etichette (categoria)
+indexer = StringIndexer(inputCol="categoria", outputCol="categoryIndex")
+
+# 2. Creazione di un testo completo unendo 'summary' e 'documents'
+spark_df = spark_df.withColumn('full_text', F.concat_ws(' ', 'summary', 'documents'))
+
+# 3. Tokenizzazione del testo completo in parole
+tokenizer = Tokenizer(inputCol="full_text", outputCol="words")
+
+# 4. Rimozione delle stopwords (parole comuni che non aggiungono valore analitico)
+stopwords_remover = StopWordsRemover(inputCol="words", outputCol="filtered_words")
+
+# 5. Creazione di una rappresentazione numerica del testo usando CountVectorizer
+# Limitiamo il vocabolario a 1000 parole e solo le parole che appaiono in almeno 2 documenti
+count_vectorizer = CountVectorizer(inputCol="filtered_words", outputCol="raw_features", vocabSize=1000, minDF=2)
+
+# 6. Calcoliamo l'IDF (Inverse Document Frequency) per pesare le parole
+idf = IDF(inputCol="raw_features", outputCol="features")
+
+# 7. Combiniamo le caratteristiche in un'unica colonna di feature
+assembler = VectorAssembler(inputCols=["features"], outputCol="final_features")
+
+# 8. Creazione del classificatore Random Forest
+# Utilizziamo un numero di 200 alberi per la foresta
+rf = RandomForestClassifier(featuresCol="final_features", labelCol="categoryIndex", numTrees=200)
+
+# 9. Creazione della pipeline con tutte le fasi di preprocessing e classificazione
+pipeline = Pipeline(stages=[indexer, tokenizer, stopwords_remover, count_vectorizer, idf, assembler, rf])
+
+# Divisione dei dati in training (70%) e test (30%)
+train_data, test_data = spark_df.randomSplit([0.7, 0.3], seed=42)
+
+# Allenamento del modello sui dati di training
+model = pipeline.fit(train_data)
+
+# Predizioni sui dati di test
+rf_predictions = model.transform(test_data)
+
+# Valutazione delle prestazioni del modello
+
+# 10. Calcolo dell'accuratezza
+evaluator_accuracy = MulticlassClassificationEvaluator(labelCol="categoryIndex", predictionCol="prediction", metricName="accuracy")
+accuracy_rf = evaluator_accuracy.evaluate(rf_predictions)
+print(f"Accuratezza Random Forest: {accuracy_rf}")
+
+# 11. Calcolo del F1-Score
+evaluator_f1 = MulticlassClassificationEvaluator(labelCol="categoryIndex", predictionCol="prediction", metricName="f1")
+f1_score = evaluator_f1.evaluate(rf_predictions)
+print(f"F1-Score: {f1_score}")
+
+# 12. Generazione del classification_report utilizzando scikit-learn
+# Convertiamo le predizioni e le etichette vere in formato Pandas per calcolare il report
+predicted_labels = rf_predictions.select('prediction').toPandas().values.flatten()
+true_labels = rf_predictions.select('categoryIndex').toPandas().values.flatten()
+
+# Stampa il report di classificazione che include precision, recall, f1-score
+print(classification_report(true_labels, predicted_labels))
+
+# 13. Analisi degli errori: Mostriamo i primi 5 casi di errore (dove la predizione non coincide con la categoria)
+errors = rf_predictions.filter(rf_predictions["categoryIndex"] != rf_predictions["prediction"])
+errors.select("categoria", "prediction", "summary").show(5)
+# Import delle librerie necessarie
+from pyspark.ml.feature import StopWordsRemover, CountVectorizer, Tokenizer, IDF, StringIndexer, VectorAssembler
+from pyspark.ml import Pipeline
+from pyspark.ml.classification import RandomForestClassifier
+from pyspark.ml.evaluation import MulticlassClassificationEvaluator
+from pyspark.sql import functions as F
+from sklearn.metrics import classification_report
+
+# Preprocessing: Trasformazione e pulizia delle colonne
+# Convertiamo le colonne in tipo stringa
+spark_df = spark_df.withColumn('title', F.col('title').cast('string'))
+spark_df = spark_df.withColumn('summary', F.col('summary').cast('string'))
+spark_df = spark_df.withColumn('documents', F.col('documents').cast('string'))
+spark_df = spark_df.withColumn('categoria', F.col('categoria').cast('string'))
+
+# 1. Creazione dell'indice per le etichette (categoria)
+# Trasforma la colonna 'categoria' in un indice numerico per l'etichetta
+indexer = StringIndexer(inputCol="categoria", outputCol="categoryIndex")
+
+# 2. Tokenizzazione del testo nella colonna 'summary'
+# La tokenizzazione suddivide il testo in una lista di parole
+tokenizer = Tokenizer(inputCol="summary", outputCol="words")
+
+# 3. Rimozione delle stop words (parole comuni senza valore analitico)
+# Le stop words sono rimosse dalla lista di parole
+stopwords_remover = StopWordsRemover(inputCol="words", outputCol="filtered_words")
+
+# 4. CountVectorizer: converte il testo in una rappresentazione numerica
+# Crea un vettore di caratteristiche utilizzando un vocabolario di 5000 parole e un minimo di 2 documenti per parola
+count_vectorizer = CountVectorizer(inputCol="filtered_words", outputCol="raw_features", vocabSize=5000, minDF=2)
+
+# 5. Calcoliamo l'IDF (Inverse Document Frequency) per pesare le parole
+# L'IDF riduce il peso delle parole comuni e aumenta quello delle parole rare
+idf = IDF(inputCol="raw_features", outputCol="features")
+
+# 6. Combiniamo le caratteristiche in un'unica colonna
+# L'assembler combina le colonne di caratteristiche in un singolo vettore
+assembler = VectorAssembler(inputCols=["features"], outputCol="final_features")
+
+# 7. Creazione del classificatore Random Forest
+# Utilizziamo un numero di 200 alberi nella foresta per la classificazione
+rf = RandomForestClassifier(featuresCol="final_features", labelCol="categoryIndex", numTrees=200)
+
+# 8. Creazione della pipeline con tutte le fasi di preprocessing e classificazione
+# Le fasi vengono eseguite in sequenza per ogni dato
+pipeline = Pipeline(stages=[indexer, tokenizer, stopwords_remover, count_vectorizer, idf, assembler, rf])
+
+# Divisione dei dati in training (70%) e test (30%)
+train_data, test_data = spark_df.randomSplit([0.7, 0.3], seed=42)
+
+# 9. Alleniamo il modello sui dati di training
+model = pipeline.fit(train_data)
+
+# 10. Effettuiamo le predizioni sui dati di test
+rf_predictions = model.transform(test_data)
+
+# 11. Valutazione del modello: Calcoliamo l'accuratezza delle predizioni
+evaluator = MulticlassClassificationEvaluator(labelCol="categoryIndex", predictionCol="prediction", metricName="accuracy")
+accuracy_rf = evaluator.evaluate(rf_predictions)
+print(f"Accuratezza Random Forest: {accuracy_rf}")
+
+# 12. Report di classificazione: Precision, Recall, F1-Score per ogni classe
+# Converto le predizioni e le etichette vere in formato Pandas per calcolare il report
+predicted_labels = rf_predictions.select('prediction').toPandas().values.flatten()
+true_labels = rf_predictions.select('categoryIndex').toPandas().values.flatten()
+
+# Stampa il report di classificazione che include precision, recall e f1-score
+print(classification_report(true_labels, predicted_labels))
+
+# 13. Analisi degli errori: Mostriamo le predizioni errate
+# Filtriamo i casi in cui la predizione non corrisponde all'etichetta
+errors = rf_predictions.filter(rf_predictions["categoryIndex"] != rf_predictions["prediction"])
+
+# Mostriamo i primi 100 errori per analizzarli
+errors.select("categoria", "prediction").show(10)
+# Mostra alcune righe del dataframe per verificare il preprocessing
+# Viene visualizzato il contenuto delle colonne 'summary' e 'categoria' per verificare che il preprocessing sia stato eseguito correttamente
+spark_df.select('summary', 'categoria').show(5, truncate=False)
+
+# Verifica la distribuzione delle etichette
+# Questo comando raggruppa i dati per la colonna 'categoria' e conta il numero di occorrenze per ciascuna categoria
+# Utile per capire quante istanze ci sono per ogni categoria (utile anche per gestire eventuali sbilanciamenti nel dataset)
+spark_df.groupBy("categoria").count().show()
+rom pyspark.sql import SparkSession
+from pyspark.ml.feature import StopWordsRemover, Tokenizer, NGram
+import os
+import pandas as pd
+import matplotlib.pyplot as plt
+import pyspark.sql.functions as F
+
+# Creiamo la sessione Spark
+spark = SparkSession.builder.appName("WikipediaClassification").getOrCreate()
+
+# Percorso di salvataggio del file in DBFS (Databricks File System)
+file_path = '/databricks/driver/wikipedia.csv'
+
+# Scarichiamo il dataset direttamente usando wget
+os.system(f'wget https://proai-datasets.s3.eu-west-3.amazonaws.com/wikipedia.csv -O {file_path}')
+
+# Carichiamo il dataset con Pandas
+dataset = pd.read_csv(file_path)
+
+# Creiamo un DataFrame Spark a partire dal DataFrame Pandas
+spark_df = spark.createDataFrame(dataset)
+
+# Rimuoviamo la colonna 'Unnamed: 0' se esiste
+if 'Unnamed: 0' in spark_df.columns:
+    spark_df = spark_df.drop('Unnamed: 0')
+
+# Salviamo la tabella nel catalogo metastore di Spark
+spark_df.write.mode('overwrite').saveAsTable("wikipedia")
+
+# Mostriamo i primi 5 record del DataFrame Spark
+spark_df.show(5)
+
+# Trasformiamo le colonne in tipo stringa
+spark_df = spark_df.withColumn('title', F.col('title').cast('string'))
+spark_df = spark_df.withColumn('summary', F.col('summary').cast('string'))
+spark_df = spark_df.withColumn('documents', F.col('documents').cast('string'))
+spark_df = spark_df.withColumn('categoria', F.col('categoria').cast('string'))
+
+# Verifica dei valori nulli nelle colonne principali
+spark_df.select([F.count(F.when(F.col(c).isNull(), c)).alias(c) for c in spark_df.columns]).show()
+
+# Gestione dei valori nulli nella colonna 'summary' (sostituendo con stringa vuota)
+spark_df = spark_df.withColumn('summary', F.when(F.col('summary').isNull(), '').otherwise(F.col('summary')))
+
+# Indicare le etichette con StringIndexer
+from pyspark.ml.feature import StringIndexer
+indexer = StringIndexer(inputCol="categoria", outputCol="categoryIndex")
+spark_df = indexer.fit(spark_df).transform(spark_df)
+
+# Tokenizzazione del testo
+tokenizer = Tokenizer(inputCol="summary", outputCol="words")
+spark_df = tokenizer.transform(spark_df)
+
+# Rimozione delle stop words dal 'summary'
+remover = StopWordsRemover(inputCol="words", outputCol="filtered_words")
+spark_df = remover.transform(spark_df)
+
+# Creiamo bigrammi (combinazioni di due parole)
+ngram = NGram(n=2, inputCol="filtered_words", outputCol="bigrams")
+spark_df = ngram.transform(spark_df)
+
+# Creiamo trigrammi (combinazioni di tre parole)
+ngram_3 = NGram(n=3, inputCol="filtered_words", outputCol="trigrams")
+spark_df = ngram_3.transform(spark_df)
+
+# Conta la frequenza delle parole, bigrammi e trigrammi per categoria
+word_frequencies = spark_df.select('categoria', 'filtered_words') \
+    .rdd.flatMap(lambda x: [(w, x[0]) for w in x[1]]) \
+    .toDF(['word', 'categoria'])
+
+bigram_frequencies = spark_df.select('categoria', 'bigrams') \
+    .rdd.flatMap(lambda x: [(w, x[0]) for w in x[1]]) \
+    .toDF(['bigram', 'categoria'])
+
+trigram_frequencies = spark_df.select('categoria', 'trigrams') \
+    .rdd.flatMap(lambda x: [(w, x[0]) for w in x[1]]) \
+    .toDF(['trigram', 'categoria'])
+
+# Conta la frequenza delle parole, bigrammi e trigrammi per categoria
+word_counts_by_category = word_frequencies.groupBy('categoria', 'word').count()
+bigram_counts_by_category = bigram_frequencies.groupBy('categoria', 'bigram').count()
+trigram_counts_by_category = trigram_frequencies.groupBy('categoria', 'trigram').count()
+
+# Convertiamo in Pandas per la visualizzazione
+word_counts_df = word_counts_by_category.toPandas()
+bigram_counts_df = bigram_counts_by_category.toPandas()
+trigram_counts_df = trigram_counts_by_category.toPandas()
+
+# Funzione per creare un grafico a barre
+def plot_top_words(df, category_column, word_column, count_column, title):
+    for category in df[category_column].unique():
+        category_data = df[df[category_column] == category]
+        category_data = category_data.sort_values(by=count_column, ascending=False)
+        top_words = category_data.head(10)
+        
+        # Visualizzazione con grafico a barre
+        plt.figure(figsize=(10, 6))
+        plt.barh(top_words[word_column], top_words[count_column], color='skyblue')
+        plt.xlabel('Frequenza')
+        plt.ylabel('Parola')
+        plt.title(f'{title} - Categoria: {category}')
+        plt.gca().invert_yaxis()  # Inverte l'asse y per avere la parola con la frequenza più alta in cima
+        plt.show()
+
+# Creiamo i grafici per parole, bigrammi e trigrammi
+plot_top_words(word_counts_df, 'categoria', 'word', 'count', 'Top 10 Parole')
+plot_top_words(bigram_counts_df, 'categoria', 'bigram', 'count', 'Top 10 Bigrammi')
+plot_top_words(trigram_counts_df, 'categoria', 'trigram', 'count', 'Top 10 Trigrammi')
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+import matplotlib.pyplot as plt
+
+# Calcoliamo la matrice di confusione
+conf_matrix = confusion_matrix(true_labels, predicted_labels)
+
+# Visualizziamo la matrice di confusione
+# Otteniamo le etichette uniche dalla colonna 'categoria'
+labels = spark_df.select('categoria').distinct().rdd.flatMap(lambda x: x).collect()
+
+# Creiamo un display per la matrice di confusione
+disp = ConfusionMatrixDisplay(conf_matrix, display_labels=labels)
+
+# Mostriamo la matrice di confusione
+disp.plot(cmap='Blues')
+plt.title("Matrice di Confusione")
+plt.show()
