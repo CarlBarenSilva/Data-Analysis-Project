@@ -1,0 +1,112 @@
+import pandas as pd
+
+# Caricare il dataset
+dataset = pd.read_csv('sample_dataset.csv')
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.impute import SimpleImputer
+import numpy as np
+
+# Filtrare i record con target = 1
+df_target_1 = dataset[dataset['target'] == 1]
+
+# Funzione per pulire i valori mancanti
+def clean_missing_values(df):
+    # Identificare variabili numeriche e categoriche
+    numeric_columns = df.select_dtypes(include=[np.number]).columns
+    categorical_columns = df.select_dtypes(exclude=[np.number]).columns
+
+    # Pulizia per variabili numeriche: usare la mediana per riempire
+    imputer_numeric = SimpleImputer(strategy='median')
+    df[numeric_columns] = imputer_numeric.fit_transform(df[numeric_columns])
+
+    # Pulizia per variabili categoriche: usare la moda per riempire
+    imputer_categorical = SimpleImputer(strategy='most_frequent')
+    df[categorical_columns] = imputer_categorical.fit_transform(df[categorical_columns])
+
+    return df
+
+# Simmetrizzazione delle variabili asimmetriche
+def symmetrize(df):
+    for column in df.select_dtypes(include=[np.number]).columns:
+        # Applicare log trasformazione per variabili asimmetriche
+        if df[column].skew() > 1:  # Se la distribuzione è asimmetrica (skew > 1)
+            df[column] = np.log1p(df[column])  # log(1 + valore) per evitare log(0)
+    return df
+
+# One-Hot Encoding delle variabili categoriche
+def one_hot_encode(df):
+    categorical_columns = df.select_dtypes(exclude=[np.number]).columns
+    encoder = OneHotEncoder(sparse=False)
+    encoded = encoder.fit_transform(df[categorical_columns])
+    encoded_df = pd.DataFrame(encoded, columns=encoder.get_feature_names_out(categorical_columns))
+    df = pd.concat([df, encoded_df], axis=1).drop(columns=categorical_columns)
+    return df
+
+# Standardizzazione delle variabili numeriche
+def standardize(df):
+    scaler = StandardScaler()
+    numeric_columns = df.select_dtypes(include=[np.number]).columns
+    df[numeric_columns] = scaler.fit_transform(df[numeric_columns])
+    return df
+
+# Applicare tutte le funzioni della pipeline a df_target_1
+df_target_1 = clean_missing_values(df_target_1)
+df_target_1 = symmetrize(df_target_1)
+df_target_1 = one_hot_encode(df_target_1)
+df_target_1 = standardize(df_target_1)
+from sklearn.preprocessing import OrdinalEncoder, KBinsDiscretizer
+from sklearn.feature_selection import SelectKBest, f_classif
+
+# Funzione per discretizzare le variabili numeriche in 20 bin
+def discretize_numeric(df):
+    numeric_columns = df.select_dtypes(include=[np.number]).columns
+    discretizer = KBinsDiscretizer(n_bins=20, encode='ordinal', strategy='uniform')
+    df[numeric_columns] = discretizer.fit_transform(df[numeric_columns])
+    return df
+
+# Funzione per codificare variabili categoriche in modo ordinale
+def ordinal_encode(df):
+    categorical_columns = df.select_dtypes(exclude=[np.number]).columns
+    encoder = OrdinalEncoder()
+    df[categorical_columns] = encoder.fit_transform(df[categorical_columns])
+    return df
+
+# Selezionare le 5 variabili più informative
+def select_top_features(df, target):
+    X = df.drop(columns=['target'])
+    y = df[target]
+    selector = SelectKBest(f_classif, k=5)
+    X_new = selector.fit_transform(X, y)
+    selected_columns = X.columns[selector.get_support()]
+    df = df[selected_columns]
+    df['target'] = y  # Aggiungiamo di nuovo il target
+    return df
+
+# Applicare tutte le funzioni della pipeline a tutto il dataset
+dataset = clean_missing_values(dataset)
+dataset = discretize_numeric(dataset)
+dataset = ordinal_encode(dataset)
+dataset = select_top_features(dataset, 'target')
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import MinMaxScaler
+
+# Funzione per applicare PCA
+def apply_pca(df):
+    numeric_columns = df.select_dtypes(include=[np.number]).columns
+    pca = PCA(n_components=0.80)  # Mantieni l'80% della varianza
+    df[numeric_columns] = pca.fit_transform(df[numeric_columns])
+    return df
+
+# Funzione per normalizzare le variabili numeriche
+def normalize_numeric(df):
+    numeric_columns = df.select_dtypes(include=[np.number]).columns
+    scaler = MinMaxScaler()
+    df[numeric_columns] = scaler.fit_transform(df[numeric_columns])
+    return df
+
+# Applicare tutte le funzioni della pipeline alle variabili numeriche
+df_numerical = dataset.select_dtypes(include=[np.number])
+df_numerical = clean_missing_values(df_numerical)
+df_numerical = symmetrize(df_numerical)
+df_numerical = apply_pca(df_numerical)
+df_numerical = normalize_numeric(df_numerical)
