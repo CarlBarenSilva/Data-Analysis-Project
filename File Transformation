@@ -1,0 +1,374 @@
+import os
+import csv
+import sqlite3
+from datetime import datetime
+
+def process_csv_file(file_path, tipo_pubblicazione):
+    """
+    Processa un singolo file CSV e restituisce i dati estratti
+    
+    Args:
+        file_path (str): Percorso del file CSV
+        tipo_pubblicazione (str): 'QUOTIDIANO' o 'PERIODICO'
+    
+    Returns:
+        list: Lista di tuple con i dati estratti
+    """
+    all_data = []
+    
+    if not os.path.exists(file_path):
+        print(f"ERRORE: Il file {file_path} non esiste!")
+        return all_data
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as csv_file:
+            lines = csv_file.readlines()
+            
+            # La riga 0 contiene i nomi delle testate, la riga 1 le intestazioni delle colonne
+            header_line = lines[0].strip()  # Riga con i nomi delle testate
+            column_line = lines[1].strip()  # Riga con Area, Regione, Provincia, etc.
+            
+            # Analizza le intestazioni delle testate
+            header_parts = header_line.split(';')
+            column_parts = column_line.split(';')
+            
+            print(f"\n[{tipo_pubblicazione}] Numero colonne testate: {len(header_parts)}")
+            print(f"[{tipo_pubblicazione}] Numero colonne intestazioni: {len(column_parts)}")
+            
+            # La popolazione è nella colonna 5 (indice 5)
+            popolazione_col_index = 5
+            
+            # Le testate iniziano dalla colonna 6 (dopo Popolaz.)
+            start_testata_index = 6
+            
+            # Mappa le testate con le loro colonne Audipress e ADS
+            testate_map = {}  # {testata_name: {'audipress_col': idx, 'ads_col': idx}}
+            
+            # Ogni testata occupa 2 colonne: Audipress e ADS
+            col_index = start_testata_index
+            while col_index < len(header_parts) - 1:  # -1 perché ogni testata ha 2 colonne
+                testata_name = header_parts[col_index].strip()
+                if testata_name:  # Se c'è un nome di testata
+                    testate_map[testata_name] = {
+                        'audipress_col': col_index,
+                        'ads_col': col_index + 1
+                    }
+                    col_index += 2  # Prossima testata è a +2 colonne
+                else:
+                    col_index += 1  # Se colonna vuota, vai alla prossima
+            
+            print(f"[{tipo_pubblicazione}] Trovate {len(testate_map)} testate")
+            
+            # Debug: stampa alcune testate trovate
+            print(f"[{tipo_pubblicazione}] Prime 5 testate trovate:")
+            for i, (testata, cols) in enumerate(list(testate_map.items())[:5]):
+                print(f"  {testata}: Audipress col={cols['audipress_col']}, ADS col={cols['ads_col']}")
+            
+            # Variabili per tenere traccia dell'area e regione correnti
+            current_area = ""
+            current_regione = ""
+            
+            # Processa le righe di dati (dalla riga 2 in poi, saltando i totali)
+            for line_num, line in enumerate(lines[2:], start=3):  # Inizia dalla riga 2 (indice 2)
+                parts = line.strip().split(';')
+                
+                if len(parts) < popolazione_col_index + 1:  # Salta righe incomplete
+                    continue
+                
+                # Estrai informazioni geografiche
+                area = parts[1].strip() if len(parts) > 1 else ""
+                regione = parts[3].strip() if len(parts) > 3 else ""
+                provincia = parts[4].strip() if len(parts) > 4 else ""
+                
+                # Aggiorna area e regione correnti se specificati
+                if area:
+                    current_area = area
+                if regione:
+                    current_regione = regione
+                
+                # Popolazione dalla colonna 5
+                popolazione_str = parts[popolazione_col_index].strip() if len(parts) > popolazione_col_index else "0"
+                try:
+                    # Gestione corretta dei punti delle migliaia
+                    if ',' in popolazione_str:
+                        popolazione_str = popolazione_str.split(',')[0]
+                    
+                    popolazione_clean = popolazione_str.replace('.', '')
+                    popolazione = int(popolazione_clean) if popolazione_clean.isdigit() else 0
+                except ValueError:
+                    popolazione = 0
+                
+                # Salta le righe di totali
+                # Salta righe senza provincia (totali di area/regione) e totale Italia
+                if not provincia or area == "ITALIA" or current_area == "ITALIA":
+                    continue
+                
+                # Salta le righe che sono totali di regione o area
+                if not provincia.strip():
+                    continue
+                
+                # Per ogni testata, estrai i valori Audipress e ADS
+                for testata_name, cols in testate_map.items():
+                    audipress_val = 0
+                    ads_val = 0
+                    
+                    # Estrai valore Audipress
+                    if cols['audipress_col'] < len(parts):
+                        audipress_str = parts[cols['audipress_col']].strip()
+                        if audipress_str:
+                            try:
+                                audipress_clean = audipress_str.replace('.', '').replace(',', '.')
+                                if audipress_clean.replace('.', '').replace('-','').isdigit():
+                                    audipress_val = int(float(audipress_clean)) if audipress_clean not in ['', '0', '0.0'] else 0
+                            except ValueError:
+                                audipress_val = 0
+                    
+                    # Estrai valore ADS
+                    if cols['ads_col'] < len(parts):
+                        ads_str = parts[cols['ads_col']].strip()
+                        if ads_str:
+                            try:
+                                ads_clean = ads_str.replace('.', '').replace(',', '.')
+                                if ads_clean.replace('.', '').replace('-','').isdigit():
+                                    ads_val = int(float(ads_clean)) if ads_clean not in ['', '0', '0.0'] else 0
+                            except ValueError:
+                                ads_val = 0
+                    
+                    # Crea record solo se almeno uno dei due valori è presente
+                    if audipress_val > 0 or ads_val > 0:
+                        record = (current_area, current_regione, provincia, popolazione, testata_name, audipress_val, ads_val, tipo_pubblicazione)
+                        all_data.append(record)
+            
+            print(f"[{tipo_pubblicazione}] Dati processati: {len(all_data)} record estratti.")
+            
+    except Exception as e:
+        print(f"[{tipo_pubblicazione}] Errore durante la lettura del file CSV: {str(e)}")
+        import traceback
+        traceback.print_exc()
+    
+    return all_data
+
+def create_combined_database():
+    """
+    Crea un database SQLite combinato da entrambi i file CSV (quotidiani e periodici)
+    """
+    # Definizione dei percorsi
+    input_file_qt = r"C:\Users\carbaren\Desktop\stampa\Analisi Territorio QT.csv"
+    input_file_periodici = r"C:\Users\carbaren\Desktop\stampa\Analisi Territorio Periodici.csv"
+    output_folder = r"C:\Users\carbaren\Desktop\stampa"
+    output_db_path = os.path.join(output_folder, "stampa_database_completo.db")
+    output_csv_path = os.path.join(output_folder, "stampa_database_completo_output.csv")
+    
+    # Crea la cartella di output se non esiste
+    if not os.path.exists(output_folder):
+        os.makedirs(output_folder)
+        print(f"Cartella creata: {output_folder}")
+    
+    print("Avvio creazione database combinato QUOTIDIANI + PERIODICI")
+    print("=" * 60)
+    
+    # Crea il database SQLite
+    conn = sqlite3.connect(output_db_path)
+    cursor = conn.cursor()
+    
+    # Elimina le tabelle esistenti se presenti
+    cursor.execute('DROP TABLE IF EXISTS dati_stampa_completi')
+    cursor.execute('DROP TABLE IF EXISTS statistiche_complete')
+    cursor.execute('DROP VIEW IF EXISTS dati_per_tipo')
+    cursor.execute('DROP VIEW IF EXISTS sommario_completo')
+    
+    # Crea la tabella principale con la nuova struttura (incluso tipo_pubblicazione)
+    cursor.execute('''
+    CREATE TABLE dati_stampa_completi (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        area TEXT,
+        regione TEXT,
+        provincia TEXT,
+        popolazione INTEGER,
+        testata TEXT,
+        audipress INTEGER,
+        ads INTEGER,
+        tipo_pubblicazione TEXT
+    )
+    ''')
+    
+    # Crea la tabella per le statistiche
+    cursor.execute('''
+    CREATE TABLE statistiche_complete (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        testata TEXT,
+        tipo_pubblicazione TEXT,
+        area TEXT,
+        regione TEXT,
+        audipress_totale REAL,
+        ads_totale REAL,
+        audipress_medio REAL,
+        ads_medio REAL,
+        count_record INTEGER,
+        data_aggiornamento TEXT
+    )
+    ''')
+    
+    print("Tabelle database create con successo.")
+    
+    # Processa entrambi i file
+    all_combined_data = []
+    
+    # Processa quotidiani
+    print("\n1. Processando QUOTIDIANI...")
+    qt_data = process_csv_file(input_file_qt, "QUOTIDIANO")
+    all_combined_data.extend(qt_data)
+    
+    # Processa periodici
+    print("\n2. Processando PERIODICI...")
+    periodici_data = process_csv_file(input_file_periodici, "PERIODICO")
+    all_combined_data.extend(periodici_data)
+    
+    # Inserisci tutti i dati nel database
+    print(f"\n3. Inserimento di {len(all_combined_data)} record nel database...")
+    try:
+        for record in all_combined_data:
+            cursor.execute('''
+            INSERT INTO dati_stampa_completi (area, regione, provincia, popolazione, testata, audipress, ads, tipo_pubblicazione)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', record)
+        
+        print("Tutti i record inseriti con successo nel database.")
+        
+    except Exception as e:
+        print(f"Errore durante l'inserimento nel database: {str(e)}")
+        return False
+    
+    # Calcola statistiche
+    try:
+        cursor.execute("SELECT DISTINCT testata, tipo_pubblicazione FROM dati_stampa_completi")
+        testate = cursor.fetchall()
+        
+        print(f"4. Calcolo statistiche per {len(testate)} testate...")
+        
+        for testata, tipo in testate:
+            cursor.execute('''
+            SELECT audipress, ads FROM dati_stampa_completi 
+            WHERE testata = ? AND tipo_pubblicazione = ?
+            ''', (testata, tipo))
+            
+            results = cursor.fetchall()
+            audipress_values = [row[0] for row in results if row[0] is not None and row[0] > 0]
+            ads_values = [row[1] for row in results if row[1] is not None and row[1] > 0]
+            
+            audipress_totale = sum(audipress_values) if audipress_values else 0
+            ads_totale = sum(ads_values) if ads_values else 0
+            audipress_medio = audipress_totale / len(audipress_values) if audipress_values else 0
+            ads_medio = ads_totale / len(ads_values) if ads_values else 0
+            count = len(results)
+            
+            # Inserisci statistiche
+            cursor.execute('''
+            INSERT INTO statistiche_complete 
+            (testata, tipo_pubblicazione, area, regione, audipress_totale, ads_totale, audipress_medio, ads_medio, count_record, data_aggiornamento)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (testata, tipo, 'TOTALE', 'TOTALE', audipress_totale, ads_totale, audipress_medio, ads_medio, count,
+                  datetime.now().strftime('%Y-%m-%d %H:%M:%S')))
+        
+        print("Statistiche calcolate e inserite nel database.")
+    except Exception as e:
+        print(f"Errore durante il calcolo delle statistiche: {str(e)}")
+    
+    # Crea viste utili
+    cursor.execute('''
+    CREATE VIEW IF NOT EXISTS dati_per_tipo AS
+    SELECT 
+        tipo_pubblicazione,
+        area,
+        regione,
+        provincia,
+        popolazione,
+        testata,
+        audipress,
+        ads
+    FROM dati_stampa_completi
+    WHERE area IS NOT NULL AND area != ''
+    ORDER BY tipo_pubblicazione, area, regione, provincia, testata
+    ''')
+    
+    cursor.execute('''
+    CREATE VIEW IF NOT EXISTS sommario_completo AS
+    SELECT 
+        tipo_pubblicazione,
+        testata,
+        COUNT(*) as numero_record,
+        SUM(audipress) as audipress_totale,
+        SUM(ads) as ads_totale,
+        AVG(audipress) as audipress_medio,
+        AVG(ads) as ads_medio
+    FROM dati_stampa_completi
+    GROUP BY tipo_pubblicazione, testata
+    ORDER BY tipo_pubblicazione, audipress_totale DESC
+    ''')
+    
+    cursor.execute('''
+    CREATE VIEW IF NOT EXISTS confronto_qt_vs_periodici AS
+    SELECT 
+        testata,
+        tipo_pubblicazione,
+        SUM(audipress) as audipress_totale,
+        SUM(ads) as ads_totale,
+        COUNT(*) as province_coperte
+    FROM dati_stampa_completi
+    GROUP BY testata, tipo_pubblicazione
+    ORDER BY audipress_totale DESC
+    ''')
+    
+    # Commit e chiudi il database
+    conn.commit()
+    conn.close()
+    
+    # Crea il CSV di output combinato
+    try:
+        print("\n5. Creazione del CSV combinato...")
+        
+        with open(output_csv_path, 'w', newline='', encoding='utf-8') as f:
+            fieldnames = ['Area', 'Regione', 'Provincia', 'Popolazione', 'Testata', 'Audipress', 'ADS', 'Tipo_Pubblicazione']
+            csv_writer = csv.writer(f, delimiter=';')
+            
+            # Scrivi l'intestazione
+            csv_writer.writerow(fieldnames)
+            
+            # Scrivi i dati
+            for record in all_combined_data:
+                csv_writer.writerow(record)
+        
+        print(f"CSV combinato creato: {output_csv_path}")
+        print(f"Totale record scritti: {len(all_combined_data)}")
+        
+        # Statistiche finali
+        qt_records = len([r for r in all_combined_data if r[7] == 'QUOTIDIANO'])
+        periodici_records = len([r for r in all_combined_data if r[7] == 'PERIODICO'])
+        
+        print(f"\nSTATISTICHE FINALI:")
+        print(f"- Record QUOTIDIANI: {qt_records}")
+        print(f"- Record PERIODICI: {periodici_records}")
+        print(f"- Totale record: {len(all_combined_data)}")
+        
+    except Exception as e:
+        print(f"Errore durante la creazione del CSV di output: {str(e)}")
+    
+    print("\nProcesso COMBINATO completato con successo!")
+    print(f"Database completo creato: {output_db_path}")
+    print("\nViste create nel database:")
+    print("- dati_per_tipo: Dati ordinati per tipo pubblicazione e area geografica")
+    print("- sommario_completo: Statistiche aggregate per testata e tipo")
+    print("- confronto_qt_vs_periodici: Confronto tra quotidiani e periodici")
+    
+    return True
+
+if __name__ == "__main__":
+    try:
+        print("Avvio del programma per creare un database COMBINATO da file CSV...")
+        print("Struttura output: Area, Regione, Provincia, Popolazione, Testata, Audipress, ADS, Tipo_Pubblicazione")
+        print("=" * 90)
+        create_combined_database()
+    except Exception as e:
+        print(f"\nSi è verificato un errore generale: {str(e)}")
+        import traceback
+        traceback.print_exc()
