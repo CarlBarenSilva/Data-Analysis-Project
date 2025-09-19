@@ -1,0 +1,181 @@
+import csv
+
+# Inventory and accounting data
+inventory = {}
+sales = []
+gross_profit = 0.0
+net_profit = 0.0
+FILE_PATH = "inventory.csv"
+
+# Function to load inventory from CSV file
+def load_inventory():
+    """Load inventory data from a CSV file."""
+    global inventory
+    try:
+        with open(FILE_PATH, mode='r', newline='', encoding='utf-8') as file:
+            reader = csv.reader(file)
+            next(reader)  # Skip header
+            for row in reader:
+                name, quantity, purchase_price, sale_price = row
+                inventory[name] = {
+                    "quantity": int(quantity),
+                    "purchase_price": float(purchase_price),
+                    "sale_price": float(sale_price)
+                }
+    except FileNotFoundError:
+        print("No previous inventory file found, starting with an empty inventory.")
+
+# Function to save inventory to CSV file
+def save_inventory():
+    """Save inventory data to a CSV file."""
+    with open(FILE_PATH, mode='w', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        writer.writerow(["name", "quantity", "purchase_price", "sale_price"])  # Header
+        for name, data in inventory.items():
+            writer.writerow([name, data["quantity"], data["purchase_price"], data["sale_price"]])
+
+# Function to add a new product
+def add_product():
+    """Add a new product to the inventory."""
+    name = input("Enter product name: ")
+    while True:
+        try:
+            quantity = int(input("Enter quantity: "))
+            if quantity <= 0:
+                raise ValueError("Quantity must be positive.")
+            break
+        except ValueError as e:
+            print(f"Error: {e}. Please enter a positive number.")
+
+    while True:
+        try:
+            purchase_price = float(input("Enter purchase price: "))
+            if purchase_price <= 0:
+                raise ValueError("Purchase price must be positive.")
+            break
+        except ValueError as e:
+            print(f"Error: {e}. Please enter a positive number.")
+
+    while True:
+        try:
+            sale_price = float(input("Enter sale price: "))
+            if sale_price <= 0:
+                raise ValueError("Sale price must be positive.")
+            break
+        except ValueError as e:
+            print(f"Error: {e}. Please enter a positive number.")
+
+    if name in inventory:
+        inventory[name]["quantity"] += quantity
+    else:
+        inventory[name] = {
+            "quantity": quantity,
+            "purchase_price": purchase_price,
+            "sale_price": sale_price
+        }
+
+    print(f"ADDED: {quantity} x {name}")
+
+# Function to list all products in inventory
+def list_products():
+    """Display the list of products in the inventory."""
+    print(f"{'PRODUCT':<20}{'QUANTITY':<10}{'SALE PRICE':<15}")
+    for name, data in inventory.items():
+        print(f"{name:<20}{data['quantity']:<10}€{data['sale_price']:<15.2f}")
+
+# Function to record a sale
+def record_sale():
+    """Register a sale and update inventory and profits."""
+    global gross_profit, net_profit
+
+    sale_total = 0.0
+    sale_details = []
+
+    while True:
+        name = input("Enter product name: ")
+        if name not in inventory:
+            print("Product not found!")
+            continue
+
+        while True:
+            try:
+                quantity = int(input("Enter quantity: "))
+                if quantity <= 0:
+                    raise ValueError("Quantity must be positive.")
+                if quantity > inventory[name]["quantity"]:
+                    print("Not enough stock!")
+                    continue
+                break
+            except ValueError as e:
+                print(f"Error: {e}. Please enter a valid number.")
+
+        # Calculate the sale total for this product
+        sale_price = inventory[name]["sale_price"]
+        sale_subtotal = quantity * sale_price
+        sale_total += sale_subtotal
+
+        # Reduce the inventory
+        inventory[name]["quantity"] -= quantity
+        sale_details.append(f"- {quantity} x {name}: €{sale_price:.2f}")
+
+        # Ask if the user wants to add another product to the sale
+        add_more = input("Add another product? (yes/no): ").lower()
+        if add_more != 'yes':
+            break
+
+    # Update profits
+    gross_profit += sale_total
+    print(sale_details)
+    net_sale = sale_total - sum(quantity * inventory[name]["purchase_price"] for name, quantity in sale_details)
+    net_profit += net_sale
+
+    # Show sale details
+    print("\nSALE REGISTERED")
+    for detail in sale_details:
+        print(detail)
+    print(f"Total: €{sale_total:.2f}")
+
+# Function to show profits
+def show_profits():
+    """Display the gross and net profits."""
+    print(f"\nProfits: Gross = €{gross_profit:.2f} | Net = €{net_profit:.2f}")
+
+# Function to display available commands
+def help_menu():
+    """Display the list of available commands."""
+    print("\nAvailable commands:")
+    print("add: Add a product to the inventory")
+    print("list: List products in the inventory")
+    print("sale: Record a sale")
+    print("profits: Show total profits")
+    print("help: Show the available commands")
+    print("exit: Exit the program")
+
+# Main menu function
+def main_menu():
+    """Display the main menu and handle user input."""
+    load_inventory()
+
+    while True:
+        command = input("\nEnter a command: ").lower()
+
+        if command == 'add':
+            add_product()
+        elif command == 'list':
+            list_products()
+        elif command == 'sale':
+            record_sale()
+        elif command == 'profits':
+            show_profits()
+        elif command == 'help':
+            help_menu()
+        elif command == 'exit':
+            save_inventory()
+            print("Goodbye!")
+            break
+        else:
+            print("Invalid command")
+            help_menu()
+
+if __name__ == "__main__":
+    main_menu()
