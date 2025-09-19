@@ -1,0 +1,138 @@
+import requests
+from bs4 import BeautifulSoup
+import csv
+import time
+import logging
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+# Configurazione logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+# URL del sito da cui fare scraping
+BASE_URL = "https://books.toscrape.com/catalogue/page-{}.html"
+
+# Funzione per ottenere la pagina HTML di un dato URL
+def get_page(session, url):
+    """
+    Ottiene la pagina HTML di un URL specificato, con gestione di timeout e retry.
+
+    Args:
+        session (requests.Session): Sessione di richieste HTTP.
+        url (str): URL della pagina da scaricare.
+
+    Returns:
+        str: Il contenuto della pagina HTML, o None in caso di errore.
+    """
+    try:
+        response = session.get(url, timeout=10)  # Imposta un timeout di 10 secondi
+        response.raise_for_status()  # Lancia un'eccezione se la risposta è errata (4xx, 5xx)
+        return response.text
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Errore durante il download della pagina {url}: {e}")
+        return None
+
+# Funzione per estrarre i dati da una singola pagina di libro
+def extract_book_data(book):
+    """
+    Estrae i dati di un singolo libro dalla struttura HTML.
+
+    Args:
+        book (BeautifulSoup): Elemento BeautifulSoup che rappresenta un singolo libro.
+
+    Returns:
+        dict: Un dizionario con i dati estratti dal libro.
+    """
+    try:
+        title = book.h3.a["title"]
+    except AttributeError:
+        title = None
+
+    try:
+        # Rating in stelle: 'star-rating' + nome della valutazione (ad esempio, 'star-rating Three')
+        rating = book.p["class"][-1]
+        rating_dict = {"One": 1, "Two": 2, "Three": 3, "Four": 4, "Five": 5}
+        stars = rating_dict.get(rating, None)
+    except (AttributeError, KeyError):
+        stars = None
+
+    try:
+        price = book.find("p", class_="price_color").text.strip()
+    except AttributeError:
+        price = None
+
+    try:
+        availability = book.find("p", class_="instock availability").text.strip()
+    except AttributeError:
+        availability = None
+
+    return {"Title": title, "Stars": stars, "Price": price, "Availability": availability}
+
+# Funzione principale di scraping
+def scrape_books():
+    """
+    Effettua lo scraping di tutti i libri dal sito e restituisce i dati estratti.
+
+    Returns:
+        list: Una lista di dizionari, ognuno contenente i dati di un libro.
+    """
+    all_books = []
+    page_number = 1
+    session = requests.Session()
+
+    # Impostiamo una sessione con retry
+    retries = Retry(total=3, backoff_factor=0.3, status_forcelist=[500, 502, 503, 504])
+    session.mount("https://", HTTPAdapter(max_retries=retries))
+
+    while True:
+        logging.info(f"Scraping pagina {page_number}...")
+        url = BASE_URL.format(page_number)
+        page_content = get_page(session, url)
+
+        if not page_content:
+            break
+
+        soup = BeautifulSoup(page_content, "lxml")  # Usa lxml per un parsing più veloce e potente
+        books_on_page = soup.find_all("article", class_="product_pod")
+
+        if not books_on_page:
+            break
+
+        for book in books_on_page:
+            book_data = extract_book_data(book)
+            all_books.append(book_data)
+
+        # Vai alla pagina successiva
+        page_number += 1
+        time.sleep(1)  # Ritardo per evitare di sovraccaricare il server
+
+    return all_books
+
+# Scrive i dati su un file CSV
+def save_to_csv(books, filename="books.csv"):
+    """
+    Salva i dati dei libri in un file CSV.
+
+    Args:
+        books (list): Lista di dizionari contenenti i dati dei libri.
+        filename (str): Nome del file CSV in cui salvare i dati.
+    """
+    if not books:
+        logging.warning("Nessun dato disponibile per il salvataggio.")
+        return
+
+    keys = books[0].keys()
+    with open(filename, mode="w", newline='', encoding="utf-8") as file:
+        writer = csv.DictWriter(file, fieldnames=keys)
+        writer.writeheader()
+        writer.writerows(books)
+
+    logging.info(f"I dati sono stati salvati in '{filename}'.")
+
+if __name__ == "__main__":
+    books_data = scrape_books()
+    if books_data:
+        save_to_csv(books_data)
+        logging.info("Scraping completato.")
+    else:
+        logging.warning("Nessun dato estratto.")
