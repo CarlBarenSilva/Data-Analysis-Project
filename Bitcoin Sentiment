@@ -1,0 +1,612 @@
+# Importa le librerie necessarie
+import pandas as pd
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, to_date
+
+# Inizializza la sessione Spark
+spark = SparkSession.builder.appName("BitcoinTweetsAnalysis").getOrCreate()
+
+# Scarica il dataset
+!wget https://proai-datasets.s3.eu-west-3.amazonaws.com/bitcoin_tweets.csv
+
+# Carica il dataset CSV in un DataFrame Pandas
+dataset = pd.read_csv('/databricks/driver/bitcoin_tweets.csv')
+
+# Mostra le prime righe per esplorare la struttura del dataset (prima parte di esplorazione dei dati)
+dataset.head()
+
+# Converte il DataFrame Pandas in un DataFrame Spark per l'elaborazione distribuita
+spark_df = spark.createDataFrame(dataset)
+
+# Mostra alcune righe per esplorare la struttura del DataFrame Spark
+spark_df.show(10)
+import pandas as pd
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, length
+import re
+from pyspark.sql.functions import udf
+from pyspark.sql.types import StringType
+
+# Inizializza la sessione Spark
+spark = SparkSession.builder.appName("BitcoinTweetsAnalysis").getOrCreate()
+
+# Scarica il dataset
+!wget https://proai-datasets.s3.eu-west-3.amazonaws.com/bitcoin_tweets.csv
+
+# Carica il dataset CSV in un DataFrame Pandas
+dataset = pd.read_csv('/databricks/driver/bitcoin_tweets.csv')
+
+# Mostra le prime righe per esplorare la struttura del dataset (prima parte di esplorazione dei dati)
+dataset.head()
+
+# Converte il DataFrame Pandas in un DataFrame Spark per l'elaborazione distribuita
+spark_df = spark.createDataFrame(dataset)
+
+# Funzione per pre-processare il testo
+def clean_text(text):
+    if text is None:
+        return ""
+    
+    # Rimuovere URL (http, www, etc.)
+    text = re.sub(r'http[s]?://\S+', '', text)
+    text = re.sub(r'www\.\S+', '', text)
+    
+    # Rimuovere menzioni e hashtag
+    text = re.sub(r'@\w+', '', text)  # Rimuove @username
+    text = re.sub(r'#\w+', '', text)  # Rimuove #hashtag
+    
+    # Rimuovere caratteri speciali, numeri e punteggiatura (esclusi gli spazi)
+    text = re.sub(r'[^A-Za-z\s]', '', text)
+    
+    # Rimuovere spazi extra
+    text = ' '.join(text.split())
+    
+    return text
+
+# Creazione della funzione UDF per l'applicazione su Spark DataFrame
+clean_text_udf = udf(clean_text, StringType())
+
+# Applica la funzione di pre-processing sul DataFrame Spark
+spark_df_cleaned = spark_df.withColumn("cleaned_text", clean_text_udf(col("text")))
+
+# Elimina i tweet vuoti o troppo corti (meno di 5 caratteri)
+spark_df_cleaned = spark_df_cleaned.filter(length(spark_df_cleaned.cleaned_text) > 5)
+
+# Mostra alcune righe del DataFrame dopo il pre-processing
+spark_df_cleaned.select("cleaned_text").show(10, truncate=False)
+#2. Creazione del DataFrame Spark
+#Converte il dataset in un DataFrame Spark per sfruttare la potenza di calcolo distribuito di Spark.
+
+#Cella 2: Creazione del DataFrame Spark
+# Converti in Spark DataFrame
+spark_df = spark.createDataFrame(dataset)
+
+# Verifica le colonne e i tipi di dati
+spark_df.printSchema()
+
+# Visualizza le prime righe del DataFrame Spark
+spark_df.show(10)
+#Commento: Qui vediamo la struttura del DataFrame Spark, con la verifica dei tipi di dati e le prime righe.
+%pip install vaderSentiment
+import pandas as pd
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, length, to_date, udf
+from pyspark.sql.types import StringType
+import re
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+# Inizializza la sessione Spark
+spark = SparkSession.builder.appName("BitcoinTweetsAnalysis").getOrCreate()
+
+# Carica il dataset CSV (modifica il percorso se necessario)
+dataset = pd.read_csv('https://proai-datasets.s3.eu-west-3.amazonaws.com/bitcoin_tweets.csv')
+
+# Converte il DataFrame Pandas in un DataFrame Spark
+spark_df = spark.createDataFrame(dataset)
+
+# Funzione per pre-processare il testo
+def clean_text(text):
+    if text is None:
+        return ""
+    
+    # Rimuovere URL (http, www, etc.)
+    text = re.sub(r'http[s]?://\S+', '', text)
+    text = re.sub(r'www\.\S+', '', text)
+    
+    # Rimuovere menzioni e hashtag
+    text = re.sub(r'@\w+', '', text)  # Rimuove @username
+    text = re.sub(r'#\w+', '', text)  # Rimuove #hashtag
+    
+    # Rimuovere caratteri speciali, numeri e punteggiatura (esclusi gli spazi)
+    text = re.sub(r'[^A-Za-z\s]', '', text)
+    
+    # Rimuovere spazi extra
+    text = ' '.join(text.split())
+    
+    return text
+
+# Creazione della funzione UDF per l'applicazione su Spark DataFrame
+clean_text_udf = udf(clean_text, StringType())
+
+# Applica la funzione di pre-processing sul DataFrame Spark
+spark_df_cleaned = spark_df.withColumn("cleaned_text", clean_text_udf(col("text")))
+
+# Elimina i tweet vuoti o troppo corti (meno di 5 caratteri)
+spark_df_cleaned = spark_df_cleaned.filter(length(spark_df_cleaned.cleaned_text) > 5)
+
+# Funzione per rimuovere il fuso orario dalla colonna 'timestamp'
+def remove_timezone(date_str):
+    return re.sub(r'(\+[\d]{2})$', '', date_str)
+
+# UDF per rimuovere il fuso orario
+remove_timezone_udf = udf(remove_timezone, StringType())
+
+# Applica la funzione per rimuovere il fuso orario dalla colonna 'timestamp'
+spark_df_cleaned = spark_df_cleaned.withColumn('timestamp_clean', remove_timezone_udf(col('timestamp')))
+
+# Converte la colonna 'timestamp' in formato DataType, ora senza il fuso orario
+spark_df_cleaned = spark_df_cleaned.withColumn('timestamp', to_date(col('timestamp_clean'), 'yyyy-MM-dd HH:mm:ss'))
+
+# Inizializza il sentiment analyzer
+analyzer = SentimentIntensityAnalyzer()
+
+# Funzione per classificare il sentiment in base al punteggio 'compound' calcolato da VADER
+def get_sentiment(text):
+    score = analyzer.polarity_scores(text)
+    compound_score = score['compound']
+    
+    if compound_score >= 0.05:
+        return "Positivo"
+    elif compound_score <= -0.05:
+        return "Negativo"
+    else:
+        return "Neutro"
+
+# Definiamo la UDF per il sentiment
+sentiment_udf = udf(get_sentiment, StringType())
+
+# Applichiamo la UDF al DataFrame Spark per creare una nuova colonna chiamata 'sentiment'
+sentiment_df = spark_df_cleaned.withColumn("sentiment", sentiment_udf(col('cleaned_text')))
+
+# Visualizza i risultati dei primi 10 tweet con la colonna 'timestamp' e 'sentiment'
+sentiment_df.select("timestamp", "text", "sentiment").show(10)
+#4. Creazione della colonna Data
+#Ora estraiamo la data dai timestamp per poter aggregare i dati giornalieri.
+
+#Cella 4: Estrazione della Data
+
+# Estrai la data dal timestamp (assumiamo che il timestamp sia in formato stringa ISO 8601)
+sentiment_df = sentiment_df.withColumn("timestamp", to_date(sentiment_df['timestamp']))
+
+# Visualizza i primi risultati con la colonna 'date'
+sentiment_df.select("text", "sentiment", "timestamp").show(10)
+#Commento: In questa cella, estraiamo la data dal timestamp dei tweet per poter raggruppare i dati in base ai giorni.
+#5. Aggregazione e Visualizzazione del Sentiment Giornaliero
+#Aggrega i tweet per giorno e tipo di sentiment, quindi visualizza l'andamento del sentiment nel tempo.
+
+#Cella 5: Aggregazione dei Sentimenti Giornalieri
+
+# Aggrega il numero di tweet per sentiment per giorno
+sentiment_by_day = sentiment_df.groupBy("timestamp", "sentiment").count()
+
+# Visualizza i risultati dell'aggregazione
+sentiment_by_day.show()
+
+# Converti in Pandas per la visualizzazione dei dati
+sentiment_by_day_pd = sentiment_by_day.toPandas()
+#Commento: In questa cella, raggruppiamo i dati per giorno e tipo di sentiment (positivo, negativo, neutro). Successivamente, convertemmo il risultato in un DataFrame Pandas per facilitare la visualizzazione.
+from pyspark.sql.functions import year, month, to_date
+import matplotlib.pyplot as plt  # Importa matplotlib per i grafici
+
+# Assicurati che la colonna 'timestamp' sia di tipo Date
+sentiment_df = sentiment_df.withColumn('timestamp', to_date('timestamp'))
+
+# Estrai l'anno e il mese dalla colonna 'timestamp'
+sentiment_df = sentiment_df.withColumn('year', year('timestamp'))  # Aggiungi la colonna 'year'
+sentiment_df = sentiment_df.withColumn('month', month('timestamp'))  # Aggiungi la colonna 'month'
+
+# Filtra i dati per l'anno 2019
+sentiment_df_2019 = sentiment_df.filter(sentiment_df['year'] == 2019)
+
+# Aggrega il sentiment per mese nel 2019
+sentiment_by_month_2019 = sentiment_df_2019.groupBy("month", "sentiment").count()
+
+# Converte il risultato in Pandas DataFrame per facilitare la visualizzazione
+sentiment_by_month_2019_pd = sentiment_by_month_2019.toPandas()
+
+# Pivot dei dati per ottenere una struttura con le colonne 'Positivo', 'Negativo', 'Neutro'
+sentiment_by_month_2019_pivot = sentiment_by_month_2019_pd.pivot_table(index='month', columns='sentiment', values='count', aggfunc='sum', fill_value=0)
+
+# Grafico per la distribuzione del sentiment per mese nel 2019
+plt.figure(figsize=(10, 6))
+sentiment_by_month_2019_pivot.plot(kind='bar', stacked=True, color=['green', 'red', 'gray'])
+plt.title('Distribuzione del Sentiment per Mese - 2019')
+plt.xlabel('Mese')
+plt.ylabel('Numero di Tweet')
+plt.xticks(range(12), ['Gen', 'Feb', 'Mar', 'Apr', 'Mag', 'Giu', 'Lug', 'Ago', 'Set', 'Ott', 'Nov', 'Dic'], rotation=45)
+plt.legend(title="Sentiment")
+plt.tight_layout()
+plt.show()
+import pandas as pd
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, length, to_date, year, udf
+from pyspark.sql.types import StringType
+import re
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import matplotlib.pyplot as plt
+
+# Inizializza la sessione Spark
+spark = SparkSession.builder.appName("BitcoinTweetsAnalysis").getOrCreate()
+
+# Carica il dataset CSV (modifica il percorso se necessario)
+dataset = pd.read_csv('https://proai-datasets.s3.eu-west-3.amazonaws.com/bitcoin_tweets.csv')
+
+# Converte il DataFrame Pandas in un DataFrame Spark
+spark_df = spark.createDataFrame(dataset)
+
+# Funzione per pre-processare il testo
+def clean_text(text):
+    if text is None:
+        return ""
+    
+    # Rimuovere URL (http, www, etc.)
+    text = re.sub(r'http[s]?://\S+', '', text)
+    text = re.sub(r'www\.\S+', '', text)
+    
+    # Rimuovere menzioni e hashtag
+    text = re.sub(r'@\w+', '', text)  # Rimuove @username
+    text = re.sub(r'#\w+', '', text)  # Rimuove #hashtag
+    
+    # Rimuovere caratteri speciali, numeri e punteggiatura (esclusi gli spazi)
+    text = re.sub(r'[^A-Za-z\s]', '', text)
+    
+    # Rimuovere spazi extra
+    text = ' '.join(text.split())
+    
+    return text
+
+# Creazione della funzione UDF per l'applicazione su Spark DataFrame
+clean_text_udf = udf(clean_text, StringType())
+
+# Applica la funzione di pre-processing sul DataFrame Spark
+spark_df_cleaned = spark_df.withColumn("cleaned_text", clean_text_udf(col("text")))
+
+# Elimina i tweet vuoti o troppo corti (meno di 5 caratteri)
+spark_df_cleaned = spark_df_cleaned.filter(length(spark_df_cleaned.cleaned_text) > 5)
+
+# Funzione per rimuovere il fuso orario dalla colonna 'timestamp'
+def remove_timezone(date_str):
+    return re.sub(r'(\+[\d]{2})$', '', date_str)
+
+# UDF per rimuovere il fuso orario
+remove_timezone_udf = udf(remove_timezone, StringType())
+
+# Applica la funzione per rimuovere il fuso orario dalla colonna 'timestamp'
+spark_df_cleaned = spark_df_cleaned.withColumn('timestamp_clean', remove_timezone_udf(col('timestamp')))
+
+# Converte la colonna 'timestamp' in formato DataType, ora senza il fuso orario
+spark_df_cleaned = spark_df_cleaned.withColumn('timestamp', to_date(col('timestamp_clean'), 'yyyy-MM-dd HH:mm:ss'))
+
+# Inizializza il sentiment analyzer
+analyzer = SentimentIntensityAnalyzer()
+
+# Funzione per classificare il sentiment in base al punteggio 'compound' calcolato da VADER
+def get_sentiment(text):
+    score = analyzer.polarity_scores(text)
+    compound_score = score['compound']
+    
+    if compound_score >= 0.05:
+        return "Positivo"
+    elif compound_score <= -0.05:
+        return "Negativo"
+    else:
+        return "Neutro"
+
+# Definiamo la UDF per il sentiment
+sentiment_udf = udf(get_sentiment, StringType())
+
+# Applichiamo la UDF al DataFrame Spark per creare una nuova colonna chiamata 'sentiment'
+sentiment_df = spark_df_cleaned.withColumn("sentiment", sentiment_udf(col('cleaned_text')))
+
+# Estrai l'anno dalla colonna 'timestamp'
+sentiment_df = sentiment_df.withColumn('year', year('timestamp'))
+
+# Aggrega il numero di tweet per sentiment per anno
+sentiment_by_year = sentiment_df.groupBy("year", "sentiment").count()
+
+# Converte il risultato in Pandas DataFrame per facilitare la visualizzazione
+sentiment_by_year_pd = sentiment_by_year.toPandas()
+
+# Pivot dei dati per ottenere una struttura con le colonne 'Positivo', 'Negativo', 'Neutro'
+sentiment_by_year_pivot = sentiment_by_year_pd.pivot_table(index='year', columns='sentiment', values='count', aggfunc='sum', fill_value=0)
+
+# Grafico per la distribuzione del sentiment per anno (in scala logaritmica)
+plt.figure(figsize=(12, 8))
+sentiment_by_year_pivot.plot(kind='bar', stacked=True, color=['green', 'red', 'gray'], logy=True)
+plt.title('Distribuzione del Sentiment per Anno (Tutti gli Anni)')
+plt.xlabel('Anno')
+plt.ylabel('Numero di Tweet (Scala Logaritmica)')
+plt.xticks(rotation=0)
+plt.legend(title="Sentiment")
+plt.tight_layout()
+plt.show()
+import pandas as pd
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, length, to_date, udf, month, year
+from pyspark.sql.types import StringType
+import re
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+# Inizializza la sessione Spark
+spark = SparkSession.builder.appName("BitcoinTweetsAnalysis").getOrCreate()
+
+# Carica il dataset CSV (modifica il percorso se necessario)
+dataset = pd.read_csv('https://proai-datasets.s3.eu-west-3.amazonaws.com/bitcoin_tweets.csv')
+
+# Converte il DataFrame Pandas in un DataFrame Spark
+spark_df = spark.createDataFrame(dataset)
+
+# Funzione per pre-processare il testo
+def clean_text(text):
+    if text is None:
+        return ""
+    
+    # Rimuovere URL (http, www, etc.)
+    text = re.sub(r'http[s]?://\S+', '', text)
+    text = re.sub(r'www\.\S+', '', text)
+    
+    # Rimuovere menzioni e hashtag
+    text = re.sub(r'@\w+', '', text)  # Rimuove @username
+    text = re.sub(r'#\w+', '', text)  # Rimuove #hashtag
+    
+    # Rimuovere caratteri speciali, numeri e punteggiatura (esclusi gli spazi)
+    text = re.sub(r'[^A-Za-z\s]', '', text)
+    
+    # Rimuovere spazi extra
+    text = ' '.join(text.split())
+    
+    return text
+
+# Creazione della funzione UDF per l'applicazione su Spark DataFrame
+clean_text_udf = udf(clean_text, StringType())
+
+# Applica la funzione di pre-processing sul DataFrame Spark
+spark_df_cleaned = spark_df.withColumn("cleaned_text", clean_text_udf(col("text")))
+
+# Elimina i tweet vuoti o troppo corti (meno di 5 caratteri)
+spark_df_cleaned = spark_df_cleaned.filter(length(spark_df_cleaned.cleaned_text) > 5)
+
+# Funzione per rimuovere il fuso orario dalla colonna 'timestamp'
+def remove_timezone(date_str):
+    return re.sub(r'(\+[\d]{2})$', '', date_str)
+
+# UDF per rimuovere il fuso orario
+remove_timezone_udf = udf(remove_timezone, StringType())
+
+# Applica la funzione per rimuovere il fuso orario dalla colonna 'timestamp'
+spark_df_cleaned = spark_df_cleaned.withColumn('timestamp_clean', remove_timezone_udf(col('timestamp')))
+
+# Converte la colonna 'timestamp' in formato DataType, ora senza il fuso orario
+spark_df_cleaned = spark_df_cleaned.withColumn('timestamp', to_date(col('timestamp_clean'), 'yyyy-MM-dd HH:mm:ss'))
+
+# Inizializza il sentiment analyzer
+analyzer = SentimentIntensityAnalyzer()
+
+# Funzione per classificare il sentiment in base al punteggio 'compound' calcolato da VADER
+def get_sentiment(text):
+    score = analyzer.polarity_scores(text)
+    compound_score = score['compound']
+    
+    if compound_score >= 0.05:
+        return "Positivo"
+    elif compound_score <= -0.05:
+        return "Negativo"
+    else:
+        return "Neutro"
+
+# Definiamo la UDF per il sentiment
+sentiment_udf = udf(get_sentiment, StringType())
+
+# Applichiamo la UDF al DataFrame Spark per creare una nuova colonna chiamata 'sentiment'
+sentiment_df = spark_df_cleaned.withColumn("sentiment", sentiment_udf(col('cleaned_text')))
+
+# Aggiungiamo colonne per mese e anno
+sentiment_df = sentiment_df.withColumn("year", year(col("timestamp")))
+sentiment_df = sentiment_df.withColumn("month", month(col("timestamp")))
+
+# Ora, calcoliamo le medie dei like e delle risposte per ogni tipo di sentiment
+# Supponiamo che nel dataset ci siano le colonne "likes" e "replies"
+sentiment_with_likes_replies = sentiment_df.select('sentiment', 'likes', 'replies')
+
+# Aggrega i dati per calcolare la media dei like e delle risposte per ciascun sentiment
+likes_replies_aggregated = sentiment_with_likes_replies.groupBy("sentiment").agg(
+    {"likes": "avg", "replies": "avg"}
+)
+
+# Converte il risultato in Pandas
+likes_replies_pd = likes_replies_aggregated.toPandas()
+
+# Stampa la media dei like e delle risposte per ogni sentiment
+print("Media dei Like per Sentiment:")
+print(likes_replies_pd[['sentiment', 'avg(likes)']])
+
+print("Media delle Risposte per Sentiment:")
+print(likes_replies_pd[['sentiment', 'avg(replies)']])
+
+# Confronta i tweet negativi e positivi
+negativi_vs_positivi = likes_replies_pd[likes_replies_pd['sentiment'].isin(['Negativo', 'Positivo'])]
+
+print("Confronto tra tweet negativi e positivi:")
+print(negativi_vs_positivi)
+#Cella 7: Analisi dell'Engagement (Likes e Risposte)
+
+# Calcola la media dei likes e delle risposte per sentiment
+engagement_df = sentiment_df.groupBy("sentiment").agg(
+    {"likes": "avg", "replies": "avg"}
+)
+
+engagement_df.show()
+pip install yfinance
+%pip install --upgrade pip
+pip install cryptocompare
+import cryptocompare
+import pandas as pd
+from datetime import datetime
+
+# Funzione per ottenere i dati storici per un anno specifico
+def get_historical_data_for_year(year):
+    # Calcola il timestamp UNIX per l'inizio e la fine dell'anno
+    start_timestamp = int(datetime(year, 1, 1).timestamp())  # 1 gennaio dell'anno
+    end_timestamp = int(datetime(year + 1, 1, 1).timestamp())  # 1 gennaio dell'anno successivo
+
+    # Ottieni i dati storici di Bitcoin per l'anno specifico
+    historical_data = cryptocompare.get_historical_price_day('BTC', 'USD', toTs=end_timestamp, limit=365)
+
+    # Converte i dati in un DataFrame
+    df = pd.DataFrame(historical_data)
+
+    # Aggiungi la colonna per la variazione giornaliera del prezzo
+    df['price_change'] = df['close'].pct_change() * 100
+
+    # Aggiungi una colonna per il timestamp in formato leggibile
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+
+    # Aggiungi una colonna per l'anno, se necessario
+    df['year'] = year
+
+    return df
+
+# Creiamo una lista vuota per raccogliere i dati per tutti gli anni dal 2008 al 2019
+all_data = []
+
+# Ottieni i dati storici per gli anni dal 2008 al 2019
+for year in range(2015, 2020):
+    yearly_data = get_historical_data_for_year(year)
+    all_data.append(yearly_data)
+
+# Uniamo tutti i DataFrame in uno solo
+final_df = pd.concat(all_data, ignore_index=True)
+
+# Visualizza i primi 5 dati
+print(final_df[['time', 'close', 'price_change', 'year']].head())
+import pandas as pd
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, length, to_date, udf
+from pyspark.sql.functions import year as year_func
+from pyspark.sql.types import StringType
+import re
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+import cryptocompare
+import matplotlib.pyplot as plt
+import numpy as np
+from datetime import datetime
+
+# Inizializza la sessione Spark
+spark = SparkSession.builder.appName("BitcoinTweetsAnalysis").getOrCreate()
+
+# Funzione per ottenere i dati storici per un anno specifico (Bitcoin)
+def get_historical_data_for_year(year):
+    start_timestamp = int(datetime(year, 1, 1).timestamp())  # 1 gennaio dell'anno
+    end_timestamp = int(datetime(year + 1, 1, 1).timestamp())  # 1 gennaio dell'anno successivo
+
+    historical_data = cryptocompare.get_historical_price_day('BTC', 'USD', toTs=end_timestamp, limit=365)
+
+    df = pd.DataFrame(historical_data)
+    df['price_change'] = df['close'].pct_change() * 100
+    df['time'] = pd.to_datetime(df['time'], unit='s')
+    df['year'] = year
+    return df
+
+# Creiamo una lista vuota per raccogliere i dati per tutti gli anni dal 2015 al 2019
+all_data = []
+for year in range(2015, 2020):
+    yearly_data = get_historical_data_for_year(year)
+    all_data.append(yearly_data)
+
+# Uniamo tutti i DataFrame in uno solo
+final_df = pd.concat(all_data, ignore_index=True)
+
+# Carica il dataset CSV (modifica il percorso se necessario)
+dataset = pd.read_csv('https://proai-datasets.s3.eu-west-3.amazonaws.com/bitcoin_tweets.csv')
+
+# Converte il DataFrame Pandas in un DataFrame Spark
+spark_df = spark.createDataFrame(dataset)
+
+# Funzione per pre-processare il testo
+def clean_text(text):
+    if text is None:
+        return ""
+    
+    text = re.sub(r'http[s]?://\S+', '', text)
+    text = re.sub(r'www\.\S+', '', text)
+    text = re.sub(r'@\w+', '', text)
+    text = re.sub(r'#\w+', '', text)
+    text = re.sub(r'[^A-Za-z\s]', '', text)
+    text = ' '.join(text.split())
+    return text
+
+clean_text_udf = udf(clean_text, StringType())
+spark_df_cleaned = spark_df.withColumn("cleaned_text", clean_text_udf(col("text")))
+
+# Elimina i tweet vuoti o troppo corti (meno di 5 caratteri)
+spark_df_cleaned = spark_df_cleaned.filter(length(spark_df_cleaned.cleaned_text) > 5)
+
+# Funzione per rimuovere il fuso orario dalla colonna 'timestamp'
+def remove_timezone(date_str):
+    return re.sub(r'(\+[\d]{2})$', '', date_str)
+
+remove_timezone_udf = udf(remove_timezone, StringType())
+spark_df_cleaned = spark_df_cleaned.withColumn('timestamp_clean', remove_timezone_udf(col('timestamp')))
+spark_df_cleaned = spark_df_cleaned.withColumn('timestamp', to_date(col('timestamp_clean'), 'yyyy-MM-dd HH:mm:ss'))
+
+# Inizializza il sentiment analyzer
+analyzer = SentimentIntensityAnalyzer()
+
+# Funzione per classificare il sentiment in base al punteggio 'compound' calcolato da VADER
+def get_sentiment(text):
+    score = analyzer.polarity_scores(text)
+    compound_score = score['compound']
+    
+    if compound_score >= 0.05:
+        return "Positivo"
+    elif compound_score <= -0.05:
+        return "Negativo"
+    else:
+        return "Neutro"
+
+sentiment_udf = udf(get_sentiment, StringType())
+sentiment_df = spark_df_cleaned.withColumn("sentiment", sentiment_udf(col('cleaned_text')))
+sentiment_df = sentiment_df.withColumn('year', year_func('timestamp'))
+
+# Aggrega il numero di tweet per sentiment per anno
+sentiment_by_year = sentiment_df.groupBy("year", "sentiment").count()
+sentiment_by_year_pd = sentiment_by_year.toPandas()
+
+# Pivot dei dati per ottenere una struttura con le colonne 'Positivo', 'Negativo', 'Neutro'
+sentiment_by_year_pivot = sentiment_by_year_pd.pivot_table(index='year', columns='sentiment', values='count', aggfunc='sum', fill_value=0)
+
+# Calcola la percentuale di sentiment per ogni anno
+sentiment_by_year_pivot['Positivo_percent'] = sentiment_by_year_pivot['Positivo'] / sentiment_by_year_pivot.sum(axis=1) * 100
+sentiment_by_year_pivot['Negativo_percent'] = sentiment_by_year_pivot['Negativo'] / sentiment_by_year_pivot.sum(axis=1) * 100
+sentiment_by_year_pivot['Neutro_percent'] = sentiment_by_year_pivot['Neutro'] / sentiment_by_year_pivot.sum(axis=1) * 100
+
+# Uniamo il DataFrame di sentiment con i dati di Bitcoin per fare la correlazione
+bitcoin_sentiment_df = final_df[['year', 'price_change']].groupby('year').mean()
+
+# Uniamo i dati di sentiment con i cambiamenti di prezzo di Bitcoin
+combined_df = sentiment_by_year_pivot.join(bitcoin_sentiment_df, how='inner', on='year')
+
+# Calcoliamo la matrice di correlazione
+correlation_matrix = combined_df[['Positivo_percent', 'Negativo_percent', 'Neutro_percent', 'price_change']].corr()
+
+# Mostriamo la matrice di correlazione
+print(correlation_matrix)
+
+# Visualizza la matrice di correlazione come heatmap
+import seaborn as sns
+
+plt.figure(figsize=(8, 6))
+sns.heatmap(correlation_matrix, annot=True, cmap='coolwarm', fmt='.2f')
+plt.title('Matrice di Correlazione tra Sentiment e Prezzo di Bitcoin')
+plt.tight_layout()
+plt.show()
